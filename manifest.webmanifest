@@ -1,0 +1,17 @@
+{
+  "name": "Camiones AR",
+  "short_name": "Camiones AR",
+  "description": "Rutas para camiones en Argentina que esquivan puentes bajos, límites de peso y calles prohibidas.",
+  "lang": "es-AR",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#17201f",
+  "theme_color": "#17201f",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

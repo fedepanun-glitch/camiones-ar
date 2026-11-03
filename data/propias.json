@@ -1,0 +1,22 @@
+[
+{"prov":"CABA","loc":"Toda la Ciudad","lugar":"Calles fuera de la Red de Tránsito Pesado","tipo":"Prohibido tránsito pesado","limite":"12 toneladas","horario":"Siempre","estado":"Confirmado por norma"},
+{"prov":"CABA / Buenos Aires","loc":"Límite CABA y provincia","lugar":"Puente de la Av. General Paz en Av. de los Corrales","tipo":"Altura máxima","limite":"3,8 metros","horario":"Siempre","estado":"A verificar"},
+{"prov":"CABA / Buenos Aires","loc":"Límite CABA y provincia","lugar":"Av. General Paz completa","tipo":"Otro","limite":"","horario":"A verificar","estado":"A verificar (fuentes contradictorias)"},
+{"prov":"Buenos Aires","loc":"Tigre","lugar":"Camino de los Remeros","tipo":"Prohibido tránsito pesado","limite":"","horario":"Siempre","estado":"Confirmado en el lugar"},
+{"prov":"Nacional","loc":"Todo el país","lugar":"Rutas nacionales y accesos a CABA","tipo":"Restricción horaria","limite":"3,5 toneladas (más de)","horario":"Fines de semana largos y recambios de quincena","estado":"Confirmado por norma"},
+{"prov":"Córdoba","loc":"Varias","lugar":"Tramos de rutas nacionales en Córdoba","tipo":"Restricción horaria","limite":"3,5 toneladas (más de)","horario":"Fines de semana largos","estado":"A verificar"},
+{"prov":"San Luis / Mendoza","loc":"San Luis a Mendoza","lugar":"Autovía RN 7 San Luis a Mendoza","tipo":"Restricción horaria","limite":"3,5 toneladas (más de)","horario":"Fines de semana largos","estado":"A verificar"},
+{"prov":"Neuquén","loc":"Varias","lugar":"RN 40","tipo":"Restricción horaria","limite":"","horario":"Regreso de feriados: 18 a 20:59","estado":"A verificar"},
+{"prov":"Neuquén","loc":"Neuquén","lugar":"Puente ferroviario sobre Ruta 151","tipo":"Altura máxima","limite":"","horario":"Siempre","estado":"A verificar"},
+{"prov":"Misiones","loc":"","lugar":"Puente sobre arroyo Acaraguá (RP 103)","tipo":"Prohibido tránsito pesado","limite":"","horario":"Siempre","estado":"A verificar"},
+{"prov":"Misiones","loc":"","lugar":"Puente sobre arroyo Tabay (RP 7)","tipo":"Peso máximo","limite":"5 toneladas","horario":"Siempre","estado":"A verificar"},
+{"prov":"Misiones","loc":"","lugar":"Puente sobre arroyo Pindaytí (RP 2)","tipo":"Peso máximo","limite":"10 toneladas","horario":"Siempre","estado":"A verificar"},
+{"prov":"Río Negro","loc":"General Roca","lugar":"Puente Paso Córdoba (RP 6)","tipo":"Peso máximo","limite":"65 toneladas","horario":"Siempre","estado":"Confirmado por norma"},
+{"prov":"Chubut","loc":"Rawson","lugar":"Puente del Poeta","tipo":"Prohibido tránsito pesado","limite":"","horario":"Siempre","estado":"Confirmado por norma"},
+{"prov":"Santa Fe","loc":"Santa Fe / Santo Tomé","lugar":"Puente Carretero","tipo":"Otro","limite":"","horario":"A verificar","estado":"A verificar"},
+{"prov":"Santa Fe","loc":"Santa Fe (ciudad)","lugar":"Recorridos obligatorios para tránsito pesado","tipo":"Recorrido obligatorio","limite":"","horario":"Siempre","estado":"Confirmado por norma"},
+{"prov":"Santa Fe","loc":"Rosario","lugar":"Ingreso a Autopista Rosario - Santa Fe","tipo":"Restricción horaria","limite":"","horario":"9 a 16, sentido Rosario a Santa Fe","estado":"Vencida"},
+{"prov":"Formosa","loc":"Formosa (capital)","lugar":"Accesos a la ciudad","tipo":"Tasa o permiso de ingreso","limite":"","horario":"Siempre","estado":"A verificar"},
+{"prov":"Neuquén","loc":"Paso Cardenal Samoré","lugar":"Paso fronterizo con Chile (RN 231)","tipo":"Mercancías peligrosas","limite":"","horario":"Siempre","estado":"Confirmado por norma"},
+{"prov":"Buenos Aires","loc":"Bahía Blanca","lugar":"Calle Florida y extensión Camino La Carrindanga","tipo":"Prohibido tránsito pesado","limite":"4 toneladas (más de)","horario":"Siempre","estado":"Confirmado por norma"}
+]
