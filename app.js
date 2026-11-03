@@ -909,6 +909,7 @@
     flushAvoids();
   }
 
+  const lugaresVisibles = () => lugares.filter(l => !String(l.nombre).startsWith('Viaje · ')); // las de un solo viaje no se listan
   const lugarIco = t => ({ base: '🏠', deposito: '📦', cliente: '🏭' }[t] || '📍');
   async function loadCloud() {
     if (!NUBE || !session) return;
@@ -1024,11 +1025,11 @@
         box.appendChild(b);
       }
     }
-    if (lugares.length) {
+    if (lugaresVisibles().length) {
       const det = document.createElement('details'); det.className = 'places';
-      det.innerHTML = `<summary>Lugares de la empresa (${lugares.length})</summary>`;
+      det.innerHTML = `<summary>Lugares de la empresa (${lugaresVisibles().length})</summary>`;
       const list = document.createElement('div'); list.className = 'list';
-      for (const l of lugares) {
+      for (const l of lugaresVisibles()) {
         const b = document.createElement('button'); b.type = 'button'; b.className = 'item';
         b.innerHTML = `<span class="ico">${lugarIco(l.tipo)}</span><span><span class="t">${esc(l.nombre)}</span><br><span class="m">${esc([l.direccion, l.notas].filter(Boolean).join(' · '))}</span></span><span></span>`;
         b.addEventListener('click', () => goTo({ label: l.nombre, lat: l.lat, lon: l.lon }));
@@ -1039,7 +1040,7 @@
   }
   function drawLugares() {
     const src = map.getSource && map.getSource('lugares'); if (!src) return;
-    src.setData({ type: 'FeatureCollection', features: lugares.map(l => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [l.lon, l.lat] }, properties: { id: l.id } })) });
+    src.setData({ type: 'FeatureCollection', features: lugaresVisibles().map(l => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [l.lon, l.lat] }, properties: { id: l.id } })) });
   }
   function lugarPopup(l) {
     const div = document.createElement('div');
@@ -1048,7 +1049,7 @@
     div.querySelector('button').addEventListener('click', () => { pop.remove(); goTo({ label: l.nombre, lat: l.lat, lon: l.lon }); });
   }
   const norm = t => String(t).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-  const lugaresQueCoinciden = text => { const q = norm(text); return lugares.filter(l => norm(l.nombre).includes(q) || (l.direccion && norm(l.direccion).includes(q)))
+  const lugaresQueCoinciden = text => { const q = norm(text); return lugaresVisibles().filter(l => norm(l.nombre).includes(q) || (l.direccion && norm(l.direccion).includes(q)))
     .map(l => ({ label: `${l.nombre}${l.direccion ? ', ' + l.direccion : ''}`, lat: l.lat, lon: l.lon, poi: true, own: true })); };
 
   // ---------- Instalar ----------
