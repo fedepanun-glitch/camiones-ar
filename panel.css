@@ -121,3 +121,7 @@ body.picking .maplibregl-canvas { cursor: crosshair; }
 #sitrack .err { margin-bottom: 8px; }
 .truck.sat.over .dot { background: #c8102e; }
 .truck.sat.stale .dot { background: #8a9593; }
+
+.addr { background: var(--bg); border: 2px dashed var(--line); border-radius: 12px; padding: 10px; }
+.addr select { background: var(--card); border: 2px solid var(--line); border-radius: 8px; padding: 6px 8px; color: var(--ink); }
+.addr .check { font-size: .9rem !important; }
