@@ -5,11 +5,11 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.110.0';
 
 const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
-const QUERY = `[out:json][timeout:60];
-area["ISO3166-1"="AR"][admin_level=2]->.ar;
+// Rectángulo que cubre Argentina (más rápido que buscar por el "área" del país)
+const QUERY = `[out:json][timeout:100][bbox:-55.2,-73.6,-21.7,-53.5];
 (
-  node["highway"="speed_camera"](area.ar);
-  relation["type"="enforcement"]["enforcement"~"^(maxspeed|average_speed)$"](area.ar);
+  node["highway"="speed_camera"];
+  relation["type"="enforcement"]["enforcement"~"^(maxspeed|average_speed)$"];
 );
 out body;
 >;
@@ -79,7 +79,7 @@ Deno.serve(async req => {
   let datos: { elements?: El[] } | null = null, ultimoError = '';
   for (const url of OVERPASS) {
     try {
-      const r = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: QUERY }), signal: AbortSignal.timeout(65000),
+      const r = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: QUERY }), signal: AbortSignal.timeout(110000),
         headers: { 'User-Agent': 'CamionesAR/1.0 (gestion de flota)' } });
       if (!r.ok) { ultimoError = `OpenStreetMap respondió ${r.status}`; continue; }
       datos = await r.json(); break;
