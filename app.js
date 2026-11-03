@@ -106,9 +106,10 @@
     map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 12 } });
     map.addLayer({ id: 'route', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': cssVar('--route'), 'line-width': 7 } });
     map.addSource('restr', { type: 'geojson', data: EMPTY });
-    map.addLayer({ id: 'restr', type: 'circle', source: 'restr', paint: {
-      'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 3, 14, 7, 18, 10],
-      'circle-color': ['get', 'c'], 'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5 } });
+    map.addLayer({ id: 'restr', type: 'symbol', source: 'restr', layout: {
+      'icon-image': ['get', 'icon'], 'icon-allow-overlap': true, 'icon-ignore-placement': true,
+      'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.32, 13, 0.5, 17, 0.75] } });
+    tuneStyle();
     if (route) map.getSource('route').setData({ type: 'Feature', geometry: route.geo, properties: {} });
     drawAvoids(); refreshRestr();
     if (handlersOn) return; handlersOn = true;
@@ -122,6 +123,11 @@
   map.on('style.load', addLayers);
   ready.then(addLayers);
 
+  // Centrar un punto en la parte visible del mapa (arriba de la hoja de abajo en el celular)
+  function focusPoint(lon, lat) {
+    const desk = matchMedia('(min-width: 820px)').matches;
+    map.easeTo({ center: [lon, lat], zoom: 16, padding: desk ? { left: 450, top: 0, right: 0, bottom: 0 } : { bottom: $('sheet').offsetHeight + 20, top: 70, left: 0, right: 0 }, duration: 600 });
+  }
   function restrPopup(r) {
     new maplibregl.Popup({ maxWidth: '300px' }).setLngLat([r.lon, r.lat]).setHTML(`<div class="pop">${signHTML(r)}<div>
       <h3>${esc(r.street)}</h3><p><b>${vlabel(r)}</b> · ${describe(r)}</p>
@@ -140,7 +146,7 @@
       const affects = r.v === 'no' || r.v === 'warn';
       if (!affects) return;
       if (!all && !nearIds.has(r)) return;
-      feats.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [r.lon, r.lat] }, properties: { i, c: cssVar(TYPES[r.t].color) } });
+      feats.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [r.lon, r.lat] }, properties: { i, icon: signId(r) } });
     });
     map.getSource('restr').setData({ type: 'FeatureCollection', features: feats });
   }
@@ -153,7 +159,7 @@
     const nav = m === 'nav';
     $('turn').hidden = !nav; $('navbar').hidden = !nav;
     if (!nav) { $('alert').hidden = true; map.easeTo({ pitch: 0, bearing: 0, duration: 400 }); }
-    if (m === 'home') renderFavs();
+    if (m === 'home') { renderFavs(); restoreTrip(); }
   }
   document.querySelectorAll('[data-back]').forEach(b => b.addEventListener('click', () => { clearRoute(); setMode('home'); }));
   function showErr(msg) { $('err').textContent = msg || ''; $('err').hidden = !msg; }
@@ -178,7 +184,7 @@
   let me = null, meMarker = null, watchId = null, lastFix = null;
   function meEl() {
     const d = document.createElement('div'); d.className = 'me';
-    d.innerHTML = '<svg viewBox="0 0 34 34"><circle cx="17" cy="17" r="15" fill="#1f6feb" stroke="#fff" stroke-width="3"/><path d="M17 7 24 24 17 20 10 24Z" fill="#fff"/></svg>';
+    d.innerHTML = '<svg viewBox="0 0 40 64" aria-hidden="true"><rect x="7" y="22" width="26" height="38" rx="4" fill="#eef1f0" stroke="#17201f" stroke-width="2.5"/><rect x="9" y="4" width="22" height="17" rx="5" fill="#1f6feb" stroke="#fff" stroke-width="2.5"/><rect x="12" y="7" width="16" height="5" rx="2" fill="#bfe0ff"/><path d="M20 0l6 4h-12z" fill="#1f6feb"/></svg>';
     return d;
   }
   function onFix(pos) {
@@ -472,7 +478,7 @@
     for (const x of route.near.slice(0, 12)) {
       const b = document.createElement('button'); b.type = 'button'; b.className = 'item';
       b.innerHTML = `${signHTML(x.r)}<span><span class="t">${esc(x.r.street)}</span><br><span class="m">${vlabel(x.r)} · ${describe(x.r)} · a ${km(x.at)}</span></span><span></span>`;
-      b.addEventListener('click', () => { map.easeTo({ center: [x.r.lon, x.r.lat], zoom: 16 }); restrPopup(x.r); });
+      b.addEventListener('click', () => { focusPoint(x.r.lon, x.r.lat); restrPopup(x.r); });
       box.appendChild(b);
     }
     setMode('preview');
@@ -535,12 +541,14 @@
     try { nav.audio = nav.audio || new (window.AudioContext || window.webkitAudioContext)(); nav.audio.resume(); } catch (e) { /* nada */ }
     Object.assign(nav, { idx: 0, spoken: {}, off: 0, overSince: 0 });
     setMode('nav'); requestWake(); startWatch();
+    saveTrip(); downloadCorridor(route);
     speak('Vamos. ' + (route.steps[0] ? route.steps[0].text : ''));
     navTick();
   });
   $('b-stop').addEventListener('click', () => {
     try { nav.wake && nav.wake.release(); } catch (e) { /* nada */ }
     try { speechSynthesis.cancel(); } catch (e) { /* nada */ }
+    store.set('trip', null);
     clearRoute(); setMode('home');
   });
 
@@ -567,8 +575,11 @@
       const rt = await requestRoute({ lat: me.lat, lon: me.lon }, route.to);
       route = rt; drawRoute(rt);
       Object.assign(nav, { idx: 0, spoken: {}, off: 0 });
-      hideAlert(); navTick();
-    } catch (e) { showAlert(e.message, 'orange'); }
+      hideAlert(); navTick(); saveTrip(); downloadCorridor(rt);
+    } catch (e) {
+      if (!navigator.onLine || /fetch|network/i.test(e.message)) { nav.lastReroute = Date.now() - 20000; showAlert('Sin señal: volvé a la línea azul. Recalculo cuando vuelva la señal.', 'orange'); }
+      else showAlert(e.message, 'orange');
+    }
   }
 
   let alertTimer;
@@ -676,14 +687,131 @@
     $('settings').showModal();
   });
   $('s-speed').addEventListener('change', () => { const v = parseInt($('s-speed').value, 10); if (v >= 40 && v <= 130) { speedLimit = v; store.set('speedLimit', v); } });
-  $('s-key').addEventListener('change', () => { const v = $('s-key').value.trim(); if (v && !/^•+$/.test(v)) { store.set('key', v); showErr(''); } });
-  $('s-restr').addEventListener('change', () => { store.set('showAll', $('s-restr').checked); refreshRestr(); });
+  for (const ev of ['change', 'input']) $('s-key').addEventListener(ev, () => { const v = $('s-key').value.trim(); if (v.length > 20 && !/^•+$/.test(v)) { store.set('key', v); showErr(''); } });
+
 
   // ---------- Instalar ----------
   let installEvt = null;
   window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('b-install').hidden = false; });
   $('b-install').addEventListener('click', async () => { if (!installEvt) return; installEvt.prompt(); await installEvt.userChoice; installEvt = null; $('b-install').hidden = true; });
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+
+  // ---------- Carteles de restricción (círculo rojo como las señales de Vialidad) ----------
+  function signId(r) {
+    const lab = (r.t === 'P' || r.t === 'D') ? 'truck' : r.t === 'H' ? 'ONU' : (Number.isFinite(r.num) ? fmt(r.num) : '?');
+    return `sg|${lab}`;
+  }
+  const TRUCK_PATH = 'M2 7h11v8H2zM13 10h4l3 3v2h-7zM4 17.5a1.6 1.6 0 1 0 3.2 0 1.6 1.6 0 1 0-3.2 0M14 17.5a1.6 1.6 0 1 0 3.2 0 1.6 1.6 0 1 0-3.2 0';
+  function makeSign(id) {
+    const lab = id.split('|')[1], S = 96, c = document.createElement('canvas'); c.width = c.height = S;
+    const g = c.getContext('2d');
+    g.beginPath(); g.arc(S / 2, S / 2, S / 2 - 3, 0, Math.PI * 2); g.fillStyle = '#c8102e'; g.fill();
+    g.beginPath(); g.arc(S / 2, S / 2, S / 2 - 14, 0, Math.PI * 2); g.fillStyle = '#fff'; g.fill();
+    g.fillStyle = '#111';
+    if (lab === 'truck') { g.save(); g.translate(20, 18); g.scale(2.4, 2.4); g.fill(new Path2D(TRUCK_PATH)); g.restore(); }
+    else { g.font = `700 ${lab.length > 3 ? 26 : 32}px "Barlow Condensed", "Arial Narrow", Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(lab, S / 2, S / 2 + 2); }
+    if (lab === 'truck' || lab === 'ONU') { g.save(); g.translate(S / 2, S / 2); g.rotate(-Math.PI / 4); g.fillStyle = '#c8102e'; g.fillRect(-S / 2 + 12, -5, S - 24, 10); g.restore(); }
+    return g.getImageData(0, 0, S, S);
+  }
+  map.on('styleimagemissing', e => { if (e.id.startsWith('sg|') && !map.hasImage(e.id)) map.addImage(e.id, makeSign(e.id), { pixelRatio: 2 }); });
+
+  // ---------- Mapa más claro para camioneros ----------
+  function vectorSource() {
+    const st = map.getStyle(); if (!st) return null;
+    return Object.keys(st.sources).find(k => st.sources[k].type === 'vector') || null;
+  }
+  function tuneStyle() {
+    try {
+      const src = vectorSource(); if (!src) return;
+      const layers = map.getStyle().layers;
+      let font = null;
+      for (const l of layers) {
+        const sl = l['source-layer'];
+        if (!font && l.type === 'symbol' && l.layout && l.layout['text-font']) font = l.layout['text-font'];
+        if (sl === 'poi' || sl === 'aerodrome_label') map.setLayoutProperty(l.id, 'visibility', 'none');
+        if (sl === 'transportation' && /path|foot|cycle|pedestrian|steps|bridleway|ferry/.test(l.id)) map.setLayoutProperty(l.id, 'visibility', 'none');
+        if (l.type === 'symbol' && sl === 'transportation_name') map.setLayoutProperty(l.id, 'text-size', ['interpolate', ['linear'], ['zoom'], 10, 12, 14, 15, 17, 19]);
+      }
+      // Estaciones de servicio: lo único que queda de los "puntos de interés"
+      if (!map.getLayer('fuel')) {
+        map.addLayer({ id: 'fuel', type: 'circle', source: src, 'source-layer': 'poi', minzoom: 11, filter: ['==', ['get', 'class'], 'fuel'],
+          paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 11, 4, 16, 8], 'circle-color': '#12873e', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } }, 'route-casing');
+        if (font) map.addLayer({ id: 'fuel-label', type: 'symbol', source: src, 'source-layer': 'poi', minzoom: 13, filter: ['==', ['get', 'class'], 'fuel'],
+          layout: { 'text-field': ['coalesce', ['get', 'name'], 'Combustible'], 'text-font': font, 'text-size': 13, 'text-offset': [0, 1.3], 'text-anchor': 'top' },
+          paint: { 'text-color': '#0b5d2a', 'text-halo-color': '#fff', 'text-halo-width': 1.5 } }, 'route-casing');
+      }
+    } catch (e) { console.warn('estilo', e); }
+  }
+
+  // ---------- Viaje sin señal ----------
+  // Al tocar IR se baja el mapa de una franja alrededor del recorrido y queda guardado en el celular.
+  let dl = { token: 0 };
+  function tileXY(lat, lon, z) {
+    const n = 2 ** z, x = Math.floor((lon + 180) / 360 * n);
+    const r = lat * Math.PI / 180, y = Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n);
+    return [x, Math.max(0, Math.min(n - 1, y))];
+  }
+  function corridorTiles(rt) {
+    const set = new Set(), add = (z, x, y) => set.add(`${z}/${x}/${y}`);
+    const spec = [[14, 1, 400], [12, 1, 2000], [10, 1, 8000], [8, 0, 30000], [6, 0, 100000]];
+    for (const [z, rad, every] of spec) {
+      let next = 0;
+      for (let i = 0; i < rt.coords.length; i++) {
+        if (rt.cum[i] < next && i !== rt.coords.length - 1) continue;
+        next = rt.cum[i] + every;
+        const [x, y] = tileXY(rt.coords[i][0], rt.coords[i][1], z);
+        for (let dx = -rad; dx <= rad; dx++) for (let dy = -rad; dy <= rad; dy++) add(z, x + dx, y + dy);
+      }
+    }
+    const [dx0, dy0] = tileXY(rt.to.lat, rt.to.lon, 14);
+    for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) add(14, dx0 + dx, dy0 + dy);
+    return [...set];
+  }
+  function offlineMsg(text, done) {
+    for (const id of ['offline', 'offline-pill']) { const el = $(id); if (!el) continue; el.textContent = text; el.hidden = !text; el.classList.toggle('done', !!done); }
+  }
+  async function downloadCorridor(rt) {
+    const token = ++dl.token;
+    const src = vectorSource(), source = src && map.getSource(src);
+    const tmpl = source && source.tiles && source.tiles[0];
+    if (!tmpl || !('serviceWorker' in navigator) || !navigator.serviceWorker.controller) { offlineMsg(''); return; }
+    const tiles = corridorTiles(rt).slice(0, 5000);
+    let done = 0, fail = 0;
+    offlineMsg('Guardando el mapa del viaje para usarlo sin señal… 0%');
+    const queue = tiles.slice();
+    async function worker() {
+      while (queue.length && token === dl.token) {
+        const [z, x, y] = queue.shift().split('/');
+        try { const r = await fetch(tmpl.replace('{z}', z).replace('{x}', x).replace('{y}', y)); if (!r.ok) fail++; } catch (e) { fail++; }
+        done++;
+        if (done % 25 === 0) offlineMsg(`Guardando el mapa del viaje para usarlo sin señal… ${Math.round(done / tiles.length * 100)}%`);
+      }
+    }
+    await Promise.all(Array.from({ length: 6 }, worker));
+    if (token !== dl.token) return;
+    if (fail > tiles.length * 0.2) offlineMsg('No se pudo guardar todo el mapa del viaje. Si hay señal, se va completando.');
+    else { offlineMsg('✓ Mapa del viaje guardado: podés seguir aunque no haya señal.', true); setTimeout(() => { const p = $('offline-pill'); if (p) p.hidden = true; }, 8000); }
+  }
+  function saveTrip() {
+    if (!route) return;
+    store.set('trip', { at: Date.now(), from: route.from, to: route.to, coords: route.coords, steps: route.steps, time: route.time });
+  }
+  function restoreTrip() {
+    const t = store.get('trip', null);
+    if (!t || Date.now() - t.at > 48 * 3600 * 1000 || !t.coords) return;
+    const box = $('favs');
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'item resume';
+    b.innerHTML = `<span class="ico">▶</span><span><span class="t">Seguir viaje</span><br><span class="m">${esc(t.to.label)}</span></span><span></span>`;
+    b.addEventListener('click', () => {
+      const cum = cumOf(t.coords);
+      route = { from: t.from, to: t.to, coords: t.coords, cum, steps: t.steps, total: cum[cum.length - 1], time: t.time,
+        geo: { type: 'LineString', coordinates: t.coords.map(([la, lo]) => [lo, la]) } };
+      route.near = nearRoute(route, 25);
+      drawRoute(route);
+      $('b-go').click();
+    });
+    box.prepend(b);
+  }
 
   // ---------- Arranque ----------
   renderTruckChip(); setMode('home');
