@@ -19,6 +19,9 @@
   const chofer = id => byId(D.choferes, id);
   const camion = id => byId(D.camiones, id);
   const lugar = id => byId(D.lugares, id);
+  // Direcciones de un solo viaje (no guardadas en Lugares): existen para el viaje pero no se listan
+  const VIAJE_PREF = 'Viaje · ';
+  const guardados = () => D.lugares.filter(l => !String(l.nombre).startsWith(VIAJE_PREF));
 
   let toastT;
   function toast(text, red) { const t = $('toast'); t.textContent = text; t.className = 'toast' + (red ? ' red' : ''); t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, 5000); }
@@ -179,7 +182,7 @@
   const placeMarkers = [];
   function drawLugares() {
     placeMarkers.splice(0).forEach(m => m.remove());
-    for (const l of D.lugares) {
+    for (const l of guardados()) {
       const el = document.createElement('div'); el.className = 'place'; el.textContent = (TIPO[l.tipo] || TIPO.otro)[0]; el.title = l.nombre;
       el.addEventListener('click', ev => { ev.stopPropagation(); new maplibregl.Popup({ offset: 12 }).setLngLat([l.lon, l.lat]).setHTML(`<b>${esc(l.nombre)}</b><br>${esc((TIPO[l.tipo] || TIPO.otro)[1])}${l.direccion ? ' · ' + esc(l.direccion) : ''}${l.notas ? '<br>' + esc(l.notas) : ''}`).addTo(map); });
       placeMarkers.push(new maplibregl.Marker({ element: el }).setLngLat([l.lon, l.lat]).addTo(map));
@@ -218,8 +221,8 @@
     for (const [sel, html] of [
       [fv.chofer_id, opts(D.choferes, c => c.nombre, D.choferes.length ? 'Elegí el chofer' : 'Primero creá un chofer')],
       [fv.camion_id, opts(camActivos, c => c.nombre, 'El que tenga el chofer')],
-      [fv.origen_id, opts(D.lugares, lugLabel, 'Donde esté el camión')],
-      [fv.destino_id, opts(D.lugares, lugLabel, D.lugares.length ? 'Elegí el destino' : 'Primero cargá un lugar')],
+      [fv.origen_id, opts(guardados(), lugLabel, 'Donde esté el camión') + NUEVO_OPT],
+      [fv.destino_id, opts(guardados(), lugLabel, 'Elegí el destino') + NUEVO_OPT],
       [fc.camion_id, opts(camActivos, c => c.nombre, 'Ninguno')],
     ]) { const r = keep(sel); sel.innerHTML = html; r(); }
     if (!fv.fecha.value) fv.fecha.value = hoyISO();
@@ -282,15 +285,68 @@
       return `<div class="row stack"><span class="ico">${d ? (TIPO[d.tipo] || TIPO.otro)[0] : '❓'}</span><span><span class="t">${esc(d ? d.nombre : 'Destino borrado')} <span class="state ${v.estado}">${ESTADO[v.estado]}</span></span><br><span class="m">${esc(sub)}</span></span><span class="acts">${acts}</span></div>`;
     }).join('');
   }
+  // "Otra dirección…": buscar una dirección (o tocar el mapa) sin tener que cargarla antes en Lugares
+  const NUEVO = '__nuevo', NUEVO_OPT = `<option value="${NUEVO}">➕ Otra dirección…</option>`;
+  const otra = { origen_id: null, destino_id: null };   // { lat, lon, label, marker }
+  function addrBox(campo) {
+    const sel = $('f-viaje')[campo];
+    const box = document.createElement('div'); box.className = 'wide where addr'; box.hidden = true;
+    box.innerHTML = `<label>${campo === 'destino_id' ? 'Dirección de destino' : 'Dirección de salida'}<span class="inline"><input type="text" data-q placeholder="Calle y número, ciudad — o coordenadas"><button type="button" class="btn ghost sm" data-buscar>Buscar</button></span></label>
+      <span class="inline"><button type="button" class="btn ghost sm" data-mapa>Tocar en el mapa</button><span class="tip" data-elegido>Todavía no elegiste el punto.</span></span>
+      <div class="list" data-resultados></div>
+      <span class="inline"><label class="check"><input type="checkbox" data-guardar checked> Guardarlo en Lugares como</label><select data-tipo><option value="cliente">Cliente</option><option value="deposito">Depósito</option><option value="otro">Otro</option></select></span>`;
+    sel.closest('label').after(box);
+    const setPunto = (lat, lon, label) => {
+      if (otra[campo] && otra[campo].marker) otra[campo].marker.remove();
+      const marker = new maplibregl.Marker({ color: campo === 'destino_id' ? '#c8102e' : '#12873e' }).setLngLat([lon, lat]).addTo(map);
+      otra[campo] = { lat, lon, label, marker };
+      box.querySelector('[data-elegido]').textContent = '✓ ' + label;
+      box.querySelector('[data-resultados]').innerHTML = ''; fly(lon, lat, 14);
+    };
+    const buscar = async () => {
+      const text = box.querySelector('[data-q]').value.trim();
+      const m = text.match(/(-?\d{1,2}\.\d{3,})\s*[, ]\s*(-?\d{1,3}\.\d{3,})/);
+      if (m) { setPunto(+m[1], +m[2], `Ubicación ${(+m[1]).toFixed(5)}, ${(+m[2]).toFixed(5)}`); return; }
+      if (text.length < 3) { toast('Escribí la dirección para buscar.', true); return; }
+      const res = box.querySelector('[data-resultados]'); res.innerHTML = '<p class="empty">Buscando…</p>';
+      const c = map.getCenter();
+      const r = await N.funcion('rutas', { op: 'search', params: { text, 'boundary.country': 'AR', size: 6, 'focus.point.lat': c.lat, 'focus.point.lon': c.lng } }).catch(() => ({ ok: false, data: {} }));
+      const fs = r.ok && r.data.features || [];
+      if (!fs.length) { res.innerHTML = `<p class="empty">${esc(r.data?.error?.message || 'No encontré esa dirección.')} Probá con calle, número y ciudad, o tocá el mapa.</p>`; return; }
+      res.innerHTML = fs.map((f, i) => `<button type="button" class="row" data-i="${i}" style="text-align:left;cursor:pointer"><span class="ico">📍</span><span class="t">${esc(f.properties.label.replace(/, Argentina$/, ''))}</span><span></span></button>`).join('');
+      res.onclick = e => { const b = e.target.closest('[data-i]'); if (!b) return; const f = fs[+b.dataset.i]; setPunto(f.geometry.coordinates[1], f.geometry.coordinates[0], f.properties.label.replace(/, Argentina$/, '')); };
+    };
+    box.querySelector('[data-buscar]').addEventListener('click', buscar);
+    box.querySelector('[data-q]').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); buscar(); } });
+    box.querySelector('[data-mapa]').addEventListener('click', () => startPick((lat, lon) => setPunto(lat, lon, `Punto marcado en el mapa (${lat.toFixed(5)}, ${lon.toFixed(5)})`), 'Tocá el mapa en el lugar de ' + (campo === 'destino_id' ? 'destino' : 'salida')));
+    sel.addEventListener('change', () => { box.hidden = sel.value !== NUEVO; if (!box.hidden) box.querySelector('[data-q]').focus(); });
+    return box;
+  }
+  const addrBoxes = { origen_id: addrBox('origen_id'), destino_id: addrBox('destino_id') };
+  function limpiarOtra() {
+    for (const k of Object.keys(otra)) { if (otra[k] && otra[k].marker) otra[k].marker.remove(); otra[k] = null; addrBoxes[k].hidden = true; addrBoxes[k].querySelector('[data-q]').value = ''; addrBoxes[k].querySelector('[data-elegido]').textContent = 'Todavía no elegiste el punto.'; }
+  }
+  // Crea el lugar para una "otra dirección" (los viajes siempre apuntan a un lugar)
+  async function lugarDeOtra(campo) {
+    const o = otra[campo], box = addrBoxes[campo];
+    const guardar = box.querySelector('[data-guardar]').checked;
+    const nombre = o.label.split(',').slice(0, 2).join(',').slice(0, 80);
+    const row = await q(sb.from('lugares').insert({ nombre: guardar ? nombre : VIAJE_PREF + nombre, tipo: guardar ? box.querySelector('[data-tipo]').value : 'otro', direccion: o.label.slice(0, 160), lat: +o.lat.toFixed(6), lon: +o.lon.toFixed(6) }).select().single(), 'No se pudo guardar la dirección');
+    upsertLocal('lugares', row); return row.id;
+  }
   $('f-viaje').chofer_id.addEventListener('change', e => { const c = chofer(e.target.value); if (c && c.camion_id) $('f-viaje').camion_id.value = c.camion_id; });
   $('f-viaje').addEventListener('submit', async e => {
     e.preventDefault();
     const f = e.target, btn = f.querySelector('[type=submit]');
-    if (f.origen_id.value && f.origen_id.value === f.destino_id.value) { toast('El origen y el destino son el mismo lugar.', true); return; }
+    if (!f.chofer_id.value) { toast('Elegí el chofer. Si todavía no hay, crealo en la pestaña Choferes.', true); return; }
+    for (const k of ['origen_id', 'destino_id']) if (f[k].value === NUEVO && !otra[k]) { toast(`Elegí la dirección de ${k === 'destino_id' ? 'destino' : 'salida'}: buscala o tocá el mapa.`, true); return; }
+    if (f.origen_id.value && f.origen_id.value !== NUEVO && f.origen_id.value === f.destino_id.value) { toast('El origen y el destino son el mismo lugar.', true); return; }
     btn.disabled = true;
     try {
-      const row = await q(sb.from('viajes').insert({ chofer_id: f.chofer_id.value, camion_id: f.camion_id.value || null, origen_id: f.origen_id.value || null, destino_id: f.destino_id.value, fecha: f.fecha.value, notas: f.notas.value.trim() || null }).select().single(), 'No se pudo asignar');
-      upsertLocal('viajes', row); f.notas.value = ''; renderViajes(); renderLive();
+      const origenId = f.origen_id.value === NUEVO ? await lugarDeOtra('origen_id') : f.origen_id.value || null;
+      const destinoId = f.destino_id.value === NUEVO ? await lugarDeOtra('destino_id') : f.destino_id.value;
+      const row = await q(sb.from('viajes').insert({ chofer_id: f.chofer_id.value, camion_id: f.camion_id.value || null, origen_id: origenId, destino_id: destinoId, fecha: f.fecha.value, notas: f.notas.value.trim() || null }).select().single(), 'No se pudo asignar');
+      upsertLocal('viajes', row); f.notas.value = ''; f.origen_id.value = ''; f.destino_id.value = ''; limpiarOtra(); fillSelects(); renderLugares(); drawLugares(); renderViajes(); renderLive();
       toast(`Viaje asignado a ${chofer(row.chofer_id)?.nombre || 'el chofer'}. Le aparece en la app. Calculando la ruta…`);
       planRoute(row);
     } catch (err) { /* ya avisado */ } finally { btn.disabled = false; }
@@ -469,8 +525,8 @@
   });
   function renderLugares() {
     const box = $('lugares');
-    if (!D.lugares.length) { box.innerHTML = '<p class="empty">Todavía no hay lugares. Empezá por la base (por ejemplo, Delta Point).</p>'; return; }
-    box.innerHTML = D.lugares.map(l => `<div class="row stack"><span class="ico">${(TIPO[l.tipo] || TIPO.otro)[0]}</span><span><span class="t">${esc(l.nombre)}</span><br><span class="m">${esc([(TIPO[l.tipo] || TIPO.otro)[1], l.direccion, l.notas].filter(Boolean).join(' · '))}</span></span>
+    if (!guardados().length) { box.innerHTML = '<p class="empty">Todavía no hay lugares. Empezá por la base (por ejemplo, Delta Point).</p>'; return; }
+    box.innerHTML = guardados().map(l => `<div class="row stack"><span class="ico">${(TIPO[l.tipo] || TIPO.otro)[0]}</span><span><span class="t">${esc(l.nombre)}</span><br><span class="m">${esc([(TIPO[l.tipo] || TIPO.otro)[1], l.direccion, l.notas].filter(Boolean).join(' · '))}</span></span>
       <span class="acts"><button type="button" class="btn ghost sm" data-lfly="${l.id}">Ver</button><button type="button" class="btn ghost sm" data-ledit="${l.id}">Editar</button><button type="button" class="btn danger sm" data-ldel="${l.id}">Borrar</button></span></div>`).join('');
   }
   $('lugares').addEventListener('click', async e => {
