@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Panel de flota</title>
+<meta name="description" content="Panel del dueño: choferes, camiones, lugares, viajes, ubicación en vivo y calles marcadas.">
+<meta name="theme-color" content="#17201f">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="panel.css">
+</head>
+<body>
+<header class="bar">
+  <img src="icons/icon.svg" alt="" width="34" height="34">
+  <h1>Panel de flota</h1>
+  <span class="who" id="who"></span>
+  <a class="btn ghost" href="./">App del chofer</a>
+  <button type="button" class="btn ghost" id="b-logout" hidden>Salir</button>
+</header>
+
+<div class="layout" id="layout" hidden>
+  <aside class="side">
+    <nav class="tabs" role="tablist" aria-label="Secciones">
+      <button type="button" role="tab" data-tab="vivo" aria-selected="true">En vivo <b class="badge" id="badge-alertas" hidden></b></button>
+      <button type="button" role="tab" data-tab="viajes">Viajes</button>
+      <button type="button" role="tab" data-tab="choferes">Choferes</button>
+      <button type="button" role="tab" data-tab="camiones">Camiones</button>
+      <button type="button" role="tab" data-tab="lugares">Lugares</button>
+      <button type="button" role="tab" data-tab="calles">Calles</button>
+      <button type="button" role="tab" data-tab="ajustes">Ajustes</button>
+    </nav>
+
+    <!-- En vivo -->
+    <section class="pane" data-pane="vivo">
+      <h2>Camiones en la calle</h2>
+      <div class="list" id="live"></div>
+      <h2>Alertas de velocidad</h2>
+      <div class="list" id="alerts"></div>
+    </section>
+
+    <!-- Viajes -->
+    <section class="pane" data-pane="viajes" hidden>
+      <h2>Asignar un viaje</h2>
+      <form class="card form" id="f-viaje">
+        <label>Chofer<select name="chofer_id" required></select></label>
+        <label>Camión<select name="camion_id"></select></label>
+        <label>Sale de<select name="origen_id"></select></label>
+        <label>Va a<select name="destino_id" required></select></label>
+        <label>Fecha<input name="fecha" type="date" required></label>
+        <label class="wide">Notas para el chofer<input name="notas" type="text" maxlength="200" placeholder="Ej.: entrar por portón 2, preguntar por Juan"></label>
+        <button type="submit" class="btn go wide">Asignar viaje</button>
+      </form>
+      <h2>Viajes</h2>
+      <div class="list" id="viajes"></div>
+    </section>
+
+    <!-- Choferes -->
+    <section class="pane" data-pane="choferes" hidden>
+      <h2>Nuevo chofer</h2>
+      <form class="card form" id="f-chofer">
+        <label class="wide">Nombre<input name="nombre" type="text" required maxlength="80" placeholder="Ej.: Juan Pérez"></label>
+        <label>Usuario<input name="usuario" type="text" required pattern="[A-Za-z0-9._\-]{3,30}" autocapitalize="none" placeholder="juan"></label>
+        <label>PIN<span class="inline"><input name="pin" type="text" inputmode="numeric" required pattern="\d{4,8}" maxlength="8"><button type="button" class="btn ghost sm" id="b-pin" title="Otro PIN al azar">Otro</button></span></label>
+        <label>Camión habitual<select name="camion_id"></select></label>
+        <label>Teléfono<input name="telefono" type="tel" maxlength="40"></label>
+        <button type="submit" class="btn go wide">Crear chofer</button>
+      </form>
+      <div class="card ok" id="new-chofer" hidden></div>
+      <h2>Choferes</h2>
+      <div class="list" id="choferes"></div>
+    </section>
+
+    <!-- Camiones -->
+    <section class="pane" data-pane="camiones" hidden>
+      <h2>Camiones y medidas</h2>
+      <p class="tip">Las rutas esquivan puentes bajos, límites de peso y calles prohibidas según estas medidas.</p>
+      <div class="list" id="camiones"></div>
+      <button type="button" class="btn go" id="b-add-camion">+ Agregar camión</button>
+    </section>
+
+    <!-- Lugares -->
+    <section class="pane" data-pane="lugares" hidden>
+      <h2 id="lugar-title">Nuevo lugar</h2>
+      <form class="card form" id="f-lugar">
+        <input type="hidden" name="id">
+        <label class="wide">Nombre<input name="nombre" type="text" required maxlength="80" placeholder="Ej.: Delta Point"></label>
+        <label>Tipo<select name="tipo"><option value="base">Base de la empresa</option><option value="cliente">Cliente</option><option value="deposito">Depósito</option><option value="otro">Otro</option></select></label>
+        <label>Dirección<input name="direccion" type="text" maxlength="160"></label>
+        <div class="wide where">
+          <span id="lugar-where" class="tip">Ubicación: buscá la dirección, pegá las coordenadas o tocá el mapa.</span>
+          <span class="inline"><button type="button" class="btn ghost sm" id="b-lugar-buscar">Buscar dirección</button><button type="button" class="btn ghost sm" id="b-lugar-mapa">Tocar en el mapa</button></span>
+          <div class="list" id="lugar-res"></div>
+        </div>
+        <label class="wide">Notas (horario, portón, contacto)<input name="notas" type="text" maxlength="200"></label>
+        <input type="hidden" name="lat"><input type="hidden" name="lon">
+        <span class="inline wide"><button type="submit" class="btn go">Guardar lugar</button><button type="button" class="btn ghost" id="b-lugar-cancel" hidden>Cancelar</button></span>
+      </form>
+      <h2>Lugares</h2>
+      <div class="list" id="lugares"></div>
+    </section>
+
+    <!-- Calles marcadas -->
+    <section class="pane" data-pane="calles" hidden>
+      <h2>Calles “No puedo pasar”</h2>
+      <p class="tip">Las marcan los choferes desde la app y todas las rutas las esquivan. Si una ya se puede usar, sacala.</p>
+      <button type="button" class="btn ghost" id="b-marcar">Marcar una calle en el mapa</button>
+      <div class="list" id="calles"></div>
+    </section>
+
+    <!-- Ajustes -->
+    <section class="pane" data-pane="ajustes" hidden>
+      <h2>Velocidad máxima</h2>
+      <form class="card form" id="f-ajustes">
+        <label>Km/h<input name="velocidad_max" type="number" min="40" max="130" step="5" required></label>
+        <button type="submit" class="btn go">Guardar</button>
+        <p class="tip wide">Si un camión la pasa, el celular del chofer suena y te llega una alerta acá.</p>
+      </form>
+    </section>
+  </aside>
+  <div id="map" aria-label="Mapa de la flota"></div>
+</div>
+
+<!-- Entrar -->
+<main class="login" id="login" hidden>
+  <form class="card form" id="f-login">
+    <h2 class="wide">Entrar al panel</h2>
+    <label class="wide">Email<input name="email" type="email" autocomplete="username" required></label>
+    <label class="wide">Contraseña<input name="password" type="password" autocomplete="current-password" required></label>
+    <p class="err wide" id="login-err" hidden></p>
+    <button type="submit" class="btn go wide">Entrar</button>
+  </form>
+</main>
+
+<main class="login" id="no-cloud" hidden>
+  <div class="card">
+    <h2>Falta conectar la nube</h2>
+    <p>Completá <code>nube-config.js</code> con la dirección y la clave pública del proyecto de Supabase. Los pasos están en el README.</p>
+  </div>
+</main>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script src="vendor/maplibre/maplibre-gl.js"></script>
+<script src="nube-config.js" onerror="void 0"></script>
+<script src="vendor/supabase/supabase.js"></script>
+<script src="nube.js"></script>
+<script src="panel.js"></script>
+</body>
+</html>
