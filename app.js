@@ -665,7 +665,7 @@
     map.setPadding({ top: Math.round(innerHeight * 0.42), bottom: 100, left: 0, right: 0 });
     saveTrip(); downloadCorridor(route);
     if (viaje && viaje.estado === 'pendiente') setTripState(viaje, 'en_curso');
-    lastPos.at = 0; sendPos();
+    lastPos.at = 0; sendPos(); shareRoute(route);
     speak('Vamos. ' + (route.steps[0] ? route.steps[0].text : ''));
     navTick();
   });
@@ -675,7 +675,7 @@
     store.set('trip', null);
     // Si terminó cerca del destino, el viaje queda como terminado
     if (viaje && route && me && dist([me.lat, me.lon], [route.to.lat, route.to.lon]) < 300) setTripState(viaje, 'terminado');
-    viaje = null;
+    viaje = null; shareRoute(null);
     clearRoute(); setMode('home');
   });
 
@@ -702,7 +702,7 @@
       const rt = await requestRoute({ lat: me.lat, lon: me.lon }, route.to);
       route = rt; drawRoute(rt);
       Object.assign(nav, { idx: 0, spoken: {}, off: 0, joined: false });
-      hideAlert(); navTick(); saveTrip(); downloadCorridor(rt);
+      hideAlert(); navTick(); saveTrip(); downloadCorridor(rt); shareRoute(rt);
     } catch (e) {
       if (!navigator.onLine || /fetch|network/i.test(e.message)) { nav.lastReroute = Date.now() - 20000; showAlert('Sin señal: volvé a la línea azul. Recalculo cuando vuelva la señal.', 'orange'); }
       else showAlert(e.message, 'orange');
@@ -972,6 +972,23 @@
       if (!error) Object.assign(lastPos, { at: now, lat: me.lat, lon: me.lon });
     } catch (e) { /* sin señal: se manda en la próxima */ }
     finally { lastPos.busy = false; }
+  }
+  // La ruta que va a seguir el chofer: la ve el dueño en el panel (simplificada a unos 400 puntos)
+  function routeGeo(rt) {
+    const c = rt.coords, step = Math.max(1, Math.ceil(c.length / 400)), out = [];
+    for (let i = 0; i < c.length; i += step) out.push([+c[i][1].toFixed(5), +c[i][0].toFixed(5)]);
+    const last = c[c.length - 1]; out.push([+last[1].toFixed(5), +last[0].toFixed(5)]);
+    return { type: 'LineString', coordinates: out };
+  }
+  async function shareRoute(rt) {
+    if (!NUBE || !session || !prof) return;
+    try {
+      const geo = rt ? routeGeo(rt) : null;
+      const p = me || (rt && rt.from);
+      if (p) await NUBE.sb.from('posiciones').upsert({ chofer_id: session.user.id, lat: +p.lat.toFixed(6), lon: +p.lon.toFixed(6),
+        camion_id: isUuid(truckId) ? truckId : null, viaje_id: viaje ? viaje.id : null, ruta: geo, destino: rt ? rt.to.label : null, at: new Date().toISOString() }, { onConflict: 'chofer_id' });
+      if (rt && viaje) await NUBE.sb.rpc('guardar_ruta_viaje', { p_viaje: viaje.id, p_ruta: geo, p_km: +(rt.total / 1000).toFixed(1), p_min: Math.round(rt.time / 60) });
+    } catch (e) { /* sin señal: se manda en el próximo recálculo */ }
   }
   function sendSpeedAlert(v) {
     if (!NUBE || !session || !me) return;

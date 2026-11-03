@@ -77,9 +77,32 @@
   const EMPTY = { type: 'FeatureCollection', features: [] };
   function addLayers() {
     if (map.getSource('bloqueos')) return;
+    // Rutas: las que siguen los choferes ahora (azul) y la de un viaje elegido en la lista (verde, punteada si es planeada)
+    map.addSource('rutas', { type: 'geojson', data: EMPTY });
+    map.addLayer({ id: 'rutas-borde', type: 'line', source: 'rutas', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 7 } });
+    map.addLayer({ id: 'rutas', type: 'line', source: 'rutas', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#1f6feb', 'line-width': 4 } });
+    map.addSource('plan', { type: 'geojson', data: EMPTY });
+    map.addLayer({ id: 'plan-borde', type: 'line', source: 'plan', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 8 } });
+    map.addLayer({ id: 'plan', type: 'line', source: 'plan', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#12873e', 'line-width': 5 } });
     map.addSource('bloqueos', { type: 'geojson', data: EMPTY });
     map.addLayer({ id: 'bloqueos', type: 'circle', source: 'bloqueos', paint: { 'circle-radius': 8, 'circle-color': '#e07a00', 'circle-stroke-color': '#fff', 'circle-stroke-width': 3 } });
-    drawBloqueos();
+    drawBloqueos(); drawRutas();
+  }
+  function drawRutas() {
+    const s = map.getSource && map.getSource('rutas'); if (!s) return;
+    s.setData({ type: 'FeatureCollection', features: D.posiciones.filter(p => p.ruta && p.ruta.coordinates && p.ruta.coordinates.length > 1 && !isStale(p))
+      .map(p => ({ type: 'Feature', geometry: p.ruta, properties: { chofer: p.chofer_id } })) });
+  }
+  map.on('click', 'rutas', e => {
+    const p = D.posiciones.find(x => x.chofer_id === e.features[0].properties.chofer); if (!p) return;
+    new maplibregl.Popup().setLngLat(e.lngLat).setHTML(`<b>${esc(posLabel(p).who)}</b><br>Va a ${esc(p.destino || 'destino')}`).addTo(map);
+  });
+  function showPlan(v) {
+    const s = map.getSource && map.getSource('plan'); if (!s || !v.ruta) return;
+    s.setData({ type: 'Feature', geometry: v.ruta, properties: {} });
+    map.setPaintProperty('plan', 'line-dasharray', v.ruta_origen === 'chofer' ? [1, 0] : [2, 1.5]);
+    const c = v.ruta.coordinates, lo = c.map(x => x[0]), la = c.map(x => x[1]);
+    map.fitBounds([[Math.min(...lo), Math.min(...la)], [Math.max(...lo), Math.max(...la)]], { padding: 60, duration: 700 });
   }
   map.on('click', 'bloqueos', e => {
     const b = byId(D.bloqueos, e.features[0].properties.id); if (!b) return;
@@ -184,7 +207,7 @@
     fillSelects(); renderLive(); renderAlerts(); renderViajes(); renderChoferes(); renderCamiones(); renderLugares(); renderCalles();
     $('f-ajustes').velocidad_max.value = D.ajustes.velocidad_max;
     renderSitrack();
-    drawTrucks(); drawSat(); drawLugares(); drawBloqueos(); frameAll();
+    drawTrucks(); drawSat(); drawLugares(); drawBloqueos(); drawRutas(); frameAll();
   }
   const opts = (arr, label, empty) => (empty != null ? `<option value="">${esc(empty)}</option>` : '') + arr.map(x => `<option value="${esc(x.id)}">${esc(label(x))}</option>`).join('');
   function fillSelects() {
@@ -216,7 +239,7 @@
     box.innerHTML = rows.map(p => {
       const L = posLabel(p), v = p.viaje_id && byId(D.viajes, p.viaje_id), d = v && lugar(v.destino_id);
       const cls = isOver(p) ? ' over' : isStale(p) ? ' stale' : '';
-      const sub = [L.truck, d ? 'va a ' + d.nombre : '', hace(p.at) + (isStale(p) ? ' (sin datos nuevos)' : '')].filter(Boolean).join(' · ');
+      const sub = [L.truck, d ? 'va a ' + d.nombre : p.destino ? 'va a ' + p.destino : '', hace(p.at) + (isStale(p) ? ' (sin datos nuevos)' : '')].filter(Boolean).join(' · ');
       return `<div class="row${cls}"><span class="ico">🚚</span><span><span class="t">${esc(L.who)} · ${Math.round(p.velocidad || 0)} km/h</span><br><span class="m">${esc(sub)}</span></span>
         <span class="acts"><button type="button" class="btn ghost sm" data-fly="${esc(p.chofer_id)}">Ver</button></span></div>`;
     }).join('') + satHtml;
@@ -252,9 +275,11 @@
     const rows = [...D.viajes].sort((a, b) => order[a.estado] - order[b.estado] || (order[a.estado] < 2 ? a.fecha.localeCompare(b.fecha) : b.fecha.localeCompare(a.fecha)));
     box.innerHTML = rows.map(v => {
       const c = chofer(v.chofer_id), t = camion(v.camion_id), o = lugar(v.origen_id), d = lugar(v.destino_id);
-      const sub = [fechaTxt(v.fecha), c ? c.nombre : 'Sin chofer', t && t.nombre, o && 'desde ' + o.nombre, v.notas].filter(Boolean).join(' · ');
-      const acts = v.estado === 'pendiente' || v.estado === 'en_curso' ? `<button type="button" class="btn danger sm" data-cancel="${v.id}">Cancelar</button>` : `<button type="button" class="btn danger sm" data-del="${v.id}">Borrar</button>`;
-      return `<div class="row"><span class="ico">${d ? (TIPO[d.tipo] || TIPO.otro)[0] : '❓'}</span><span><span class="t">${esc(d ? d.nombre : 'Destino borrado')} <span class="state ${v.estado}">${ESTADO[v.estado]}</span></span><br><span class="m">${esc(sub)}</span></span><span class="acts">${acts}</span></div>`;
+      const rutaTxt = v.ruta_km ? `${fmt(Math.round(v.ruta_km))} km · ${durTxt(v.ruta_min)}${v.ruta_origen === 'chofer' ? ' (la que sigue el chofer)' : ' (planeada)'}` : '';
+      const sub = [fechaTxt(v.fecha), c ? c.nombre : 'Sin chofer', t && t.nombre, o && 'desde ' + o.nombre, rutaTxt, v.notas].filter(Boolean).join(' · ');
+      const acts = (v.ruta ? `<button type="button" class="btn ghost sm" data-ruta="${v.id}">Ver ruta</button>` : '') +
+        (v.estado === 'pendiente' || v.estado === 'en_curso' ? `<button type="button" class="btn danger sm" data-cancel="${v.id}">Cancelar</button>` : `<button type="button" class="btn danger sm" data-del="${v.id}">Borrar</button>`);
+      return `<div class="row stack"><span class="ico">${d ? (TIPO[d.tipo] || TIPO.otro)[0] : '❓'}</span><span><span class="t">${esc(d ? d.nombre : 'Destino borrado')} <span class="state ${v.estado}">${ESTADO[v.estado]}</span></span><br><span class="m">${esc(sub)}</span></span><span class="acts">${acts}</span></div>`;
     }).join('');
   }
   $('f-viaje').chofer_id.addEventListener('change', e => { const c = chofer(e.target.value); if (c && c.camion_id) $('f-viaje').camion_id.value = c.camion_id; });
@@ -266,10 +291,40 @@
     try {
       const row = await q(sb.from('viajes').insert({ chofer_id: f.chofer_id.value, camion_id: f.camion_id.value || null, origen_id: f.origen_id.value || null, destino_id: f.destino_id.value, fecha: f.fecha.value, notas: f.notas.value.trim() || null }).select().single(), 'No se pudo asignar');
       upsertLocal('viajes', row); f.notas.value = ''; renderViajes(); renderLive();
-      toast(`Viaje asignado a ${chofer(row.chofer_id)?.nombre || 'el chofer'}. Le aparece en la app.`);
+      toast(`Viaje asignado a ${chofer(row.chofer_id)?.nombre || 'el chofer'}. Le aparece en la app. Calculando la ruta…`);
+      planRoute(row);
     } catch (err) { /* ya avisado */ } finally { btn.disabled = false; }
   });
+  const durTxt = m => { m = Math.round(m || 0); const h = Math.floor(m / 60); return h ? `${h} h ${m % 60} min` : `${m} min`; };
+  // Ruta planeada para camión: desde el lugar de salida, o desde donde está el camión (Sitrack o la app), hasta el destino
+  async function planRoute(v) {
+    const d = lugar(v.destino_id); if (!d) return;
+    const camId = v.camion_id || chofer(v.chofer_id)?.camion_id || null, T = camion(camId);
+    const o = lugar(v.origen_id);
+    const sat = camId && D.rastreo.find(r => r.camion_id === camId && r.lat != null);
+    const app = D.posiciones.find(p => p.chofer_id === v.chofer_id);
+    const from = o ? [o.lon, o.lat] : sat ? [sat.lon, sat.lat] : app ? [app.lon, app.lat] : null;
+    if (!from) { toast('Viaje asignado. La ruta se va a ver cuando el chofer toque IR (no hay lugar de salida ni ubicación del camión).'); return; }
+    const body = { coordinates: [from, [d.lon, d.lat]], language: 'es', instructions: false, units: 'm', radiuses: [2000, 2000],
+      options: { vehicle_type: 'hgv', profile_params: { restrictions: T ? { height: +T.alto, weight: +T.peso, length: +T.largo, width: +T.ancho, axleload: +T.eje, hazmat: !!T.peligrosa } : {} } } };
+    const av = D.bloqueos.map(b => { const dy = 0.00035, dx = 0.00035 / Math.cos(b.lat * Math.PI / 180); return [[[b.lon - dx, b.lat - dy], [b.lon + dx, b.lat - dy], [b.lon + dx, b.lat + dy], [b.lon - dx, b.lat + dy], [b.lon - dx, b.lat - dy]]]; });
+    if (av.length) body.options.avoid_polygons = { type: 'MultiPolygon', coordinates: av };
+    let r = await N.funcion('rutas', { op: 'directions', body }).catch(() => null);
+    if (r && !r.ok && av.length) { delete body.options.avoid_polygons; r = await N.funcion('rutas', { op: 'directions', body }).catch(() => null); } // viajes largos: sin esquivar
+    const f = r && r.ok && r.data.features && r.data.features[0];
+    if (!f) { toast('No se pudo calcular la ruta planeada: ' + (r?.data?.error?.message || 'el servicio de rutas no respondió') + '. Se va a ver cuando el chofer toque IR.', true); return; }
+    const c = f.geometry.coordinates, step = Math.max(1, Math.ceil(c.length / 400)), pts = [];
+    for (let i = 0; i < c.length; i += step) pts.push([+c[i][0].toFixed(5), +c[i][1].toFixed(5)]);
+    pts.push([+c[c.length - 1][0].toFixed(5), +c[c.length - 1][1].toFixed(5)]);
+    const km = +(f.properties.summary.distance / 1000).toFixed(1), min = Math.round(f.properties.summary.duration / 60);
+    const { data: row, error } = await sb.from('viajes').update({ ruta: { type: 'LineString', coordinates: pts }, ruta_km: km, ruta_min: min, ruta_origen: 'panel', ruta_at: new Date().toISOString() }).eq('id', v.id).select().single();
+    if (error) { fail(error, 'No se pudo guardar la ruta'); return; }
+    upsertLocal('viajes', row); renderViajes(); showPlan(row);
+    toast(`Ruta planeada: ${fmt(Math.round(km))} km, ${durTxt(min)}${T ? ' (con las medidas de ' + T.nombre + ')' : ''}.`);
+  }
   $('viajes').addEventListener('click', async e => {
+    const r = e.target.closest('[data-ruta]');
+    if (r) { const v = byId(D.viajes, r.dataset.ruta); if (v) showPlan(v); return; }
     const c = e.target.closest('[data-cancel]'), d = e.target.closest('[data-del]');
     if (c && confirm('¿Cancelar este viaje? Al chofer le deja de aparecer.')) { const row = await q(sb.from('viajes').update({ estado: 'cancelado' }).eq('id', c.dataset.cancel).select().single(), 'No se pudo cancelar'); upsertLocal('viajes', row); renderViajes(); }
     if (d && confirm('¿Borrar este viaje del historial?')) { await q(sb.from('viajes').delete().eq('id', d.dataset.del), 'No se pudo borrar'); D.viajes = D.viajes.filter(v => v.id !== d.dataset.del); renderViajes(); }
@@ -510,7 +565,7 @@
     channel = sb.channel('panel')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'posiciones' }, p => {
         if (p.eventType === 'DELETE') D.posiciones = D.posiciones.filter(x => x.chofer_id !== p.old.chofer_id); else upsertLocal('posiciones', p.new);
-        drawTrucks(); if (tab === 'vivo') renderLive();
+        drawTrucks(); drawRutas(); if (tab === 'vivo') renderLive();
       })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'alertas' }, p => {
         D.alertas.unshift(p.new); renderAlerts(); beep();
