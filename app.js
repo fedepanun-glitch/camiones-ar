@@ -102,6 +102,8 @@
     if (map.getSource('route')) return;
     map.addSource('avoid', { type: 'geojson', data: EMPTY });
     map.addLayer({ id: 'avoid', type: 'circle', source: 'avoid', paint: { 'circle-radius': 9, 'circle-color': cssVar('--warn'), 'circle-stroke-color': '#fff', 'circle-stroke-width': 3 } });
+    map.addSource('connector', { type: 'geojson', data: EMPTY });
+    map.addLayer({ id: 'connector', type: 'line', source: 'connector', layout: { 'line-cap': 'round' }, paint: { 'line-color': cssVar('--route'), 'line-width': 5, 'line-dasharray': [0.5, 2] } });
     map.addSource('route', { type: 'geojson', data: EMPTY });
     map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 12 } });
     map.addLayer({ id: 'route', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': cssVar('--route'), 'line-width': 7 } });
@@ -158,7 +160,7 @@
     for (const v of ['home', 'results', 'preview', 'loading']) $('v-' + v).hidden = v !== m;
     const nav = m === 'nav';
     $('turn').hidden = !nav; $('navbar').hidden = !nav;
-    if (!nav) { $('alert').hidden = true; map.easeTo({ pitch: 0, bearing: 0, duration: 400 }); }
+    if (!nav) { $('alert').hidden = true; $('b-center').hidden = true; setConnector(null); map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 }); map.easeTo({ pitch: 0, bearing: 0, duration: 400 }); }
     if (m === 'home') { renderFavs(); restoreTrip(); }
   }
   document.querySelectorAll('[data-back]').forEach(b => b.addEventListener('click', () => { clearRoute(); setMode('home'); }));
@@ -198,10 +200,33 @@
     }
     me = { lat: c.latitude, lon: c.longitude, speed: speed || 0, heading: heading ?? (me && me.heading) ?? 0, at: now };
     lastFix = { lat: me.lat, lon: me.lon, at: now };
-    if (!meMarker) meMarker = new maplibregl.Marker({ element: meEl(), rotationAlignment: 'map', pitchAlignment: 'viewport' }).setLngLat([me.lon, me.lat]).addTo(map);
-    else meMarker.setLngLat([me.lon, me.lat]);
-    meMarker.setRotation(me.heading || 0);
-    if (mode === 'nav') navTick();
+    if (mode === 'nav') navTick(); else setTarget(me.lat, me.lon, me.heading || 0);
+  }
+
+  // El camión se desliza entre una lectura del GPS y la siguiente, y en viaje el mapa lo sigue sin saltos.
+  const anim = { cur: null, from: null, to: null, t0: 0, dur: 1000, last: 0, raf: 0, follow: true, zoom: 16.5, zoomTo: 16.5 };
+  const lerpAngle = (a, b, t) => { const d = ((b - a + 540) % 360) - 180; return (a + d * t + 360) % 360; };
+  function setTarget(lat, lon, head) {
+    const now = performance.now();
+    if (!anim.cur) {
+      anim.cur = { lat, lon, head };
+      meMarker = new maplibregl.Marker({ element: meEl(), rotationAlignment: 'map', pitchAlignment: 'viewport' }).setLngLat([lon, lat]).addTo(map);
+    }
+    anim.from = { ...anim.cur }; anim.to = { lat, lon, head };
+    anim.dur = Math.min(1600, Math.max(400, anim.last ? now - anim.last : 1000)); anim.last = now; anim.t0 = now;
+    if (!anim.raf) anim.raf = requestAnimationFrame(frame);
+  }
+  function frame(now) {
+    const t = Math.min(1, (now - anim.t0) / anim.dur), f = anim.from, g = anim.to;
+    anim.cur = { lat: f.lat + (g.lat - f.lat) * t, lon: f.lon + (g.lon - f.lon) * t, head: lerpAngle(f.head, g.head, t) };
+    meMarker.setLngLat([anim.cur.lon, anim.cur.lat]); meMarker.setRotation(anim.cur.head);
+    let again = t < 1;
+    if (mode === 'nav' && anim.follow) {
+      anim.zoom += (anim.zoomTo - anim.zoom) * 0.04;
+      map.jumpTo({ center: [anim.cur.lon, anim.cur.lat], bearing: anim.cur.head, pitch: 55, zoom: anim.zoom });
+      again = again || Math.abs(anim.zoomTo - anim.zoom) > 0.01;
+    }
+    anim.raf = again ? requestAnimationFrame(frame) : 0;
   }
   function startWatch() {
     if (watchId != null || !('geolocation' in navigator)) return;
@@ -227,13 +252,43 @@
     showErr('Falta la clave de rutas. Tocá el menú ☰ (arriba a la izquierda) y pegala en "Clave de rutas".');
     return true;
   }
-  async function geocode(text) {
-    const c = me ? { lat: me.lat, lng: me.lon } : map.getCenter();
-    const u = `${ORS}/geocode/search?api_key=${encodeURIComponent(key())}&text=${encodeURIComponent(text)}&boundary.country=AR&size=6&focus.point.lat=${c.lat}&focus.point.lon=${c.lng}`;
-    const res = await fetch(u);
-    if (!res.ok) throw new Error(res.status === 401 || res.status === 403 ? 'La clave de rutas no es válida. Revisala en el menú ☰.' : 'El buscador no respondió. Probá de nuevo.');
+  // Coordenadas pegadas (de Google Maps, WhatsApp, etc.): "-34.4123, -58.5912" o un link largo que las tenga
+  function parseCoords(text) {
+    const m = text.match(/(-?\d{1,2}\.\d{3,})\s*[, ]\s*(-?\d{1,3}\.\d{3,})/);
+    if (!m) return null;
+    const lat = +m[1], lon = +m[2];
+    return lat < -21 && lat > -56 && lon < -53 && lon > -74 ? { lat, lon } : null;
+  }
+  async function photon(text, c) {
+    const u = `https://photon.komoot.io/api/?q=${encodeURIComponent(text)}&limit=8&lat=${c.lat}&lon=${c.lng}&bbox=-73.6,-55.1,-53.6,-21.7`;
+    const d = await (await fetch(u)).json();
+    return d.features.filter(f => (f.properties.countrycode || 'AR') === 'AR').map(f => {
+      const p = f.properties, addr = [p.street, p.housenumber].filter(Boolean).join(' ');
+      const main = p.name || addr || p.city || '';
+      const sub = [p.name ? addr : '', p.city || p.district || p.county, p.state].filter(Boolean).join(', ');
+      return { label: sub ? `${main}, ${sub}` : main, lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0], hn: !!p.housenumber, poi: !!p.name && p.osm_key !== 'highway' && p.osm_key !== 'place' };
+    }).filter(x => x.label);
+  }
+  async function orsSearch(text, c) {
+    const res = await fetch(`${ORS}/geocode/search?api_key=${encodeURIComponent(key())}&text=${encodeURIComponent(text)}&boundary.country=AR&size=6&focus.point.lat=${c.lat}&focus.point.lon=${c.lng}`);
+    if (!res.ok) { const e = new Error(res.status === 401 || res.status === 403 ? 'La clave de rutas no es válida. Revisala en el menú ☰.' : 'El buscador no respondió.'); throw e; }
     const d = await res.json();
-    return d.features.map(f => ({ label: f.properties.label.replace(/, Argentina$/, ''), lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0] }));
+    return d.features.map(f => ({ label: f.properties.label.replace(/, Argentina$/, ''), lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0], hn: !!f.properties.housenumber }));
+  }
+  async function geocode(text) {
+    if (/goo\.gl|maps\.app/i.test(text)) throw new Error('Ese link de Google Maps es corto y no trae la ubicación. En Google Maps dejá el dedo apretado sobre el lugar, copiá los números que aparecen arriba (por ejemplo -34.41, -58.59) y pegalos acá.');
+    const xy = parseCoords(text);
+    if (xy) return [{ label: 'Ubicación pegada', ...xy }];
+    const c = me ? { lat: me.lat, lng: me.lon } : map.getCenter();
+    const [a, b] = await Promise.allSettled([photon(text, c), orsSearch(text, c)]);
+    if (a.status === 'rejected' && b.status === 'rejected') throw b.reason;
+    const out = [];
+    for (const r of [...(a.value || []), ...(b.value || [])]) {
+      if (out.some(o => dist([o.lat, o.lon], [r.lat, r.lon]) < 60)) continue;
+      out.push(r);
+    }
+    const wantsNumber = /\d/.test(text) && !xy;
+    return out.slice(0, 8).map(r => ({ ...r, label: wantsNumber && !r.hn && !r.poi ? r.label + ' (sin altura exacta)' : r.label }));
   }
   async function reverse(lat, lon) {
     try {
@@ -454,6 +509,13 @@
     refreshRestr();
   }
   function clearRoute() { route = null; drawRoute(null); }
+  function setConnector(line) {
+    const src = map.getSource && map.getSource('connector');
+    if (src) src.setData(line ? { type: 'Feature', geometry: { type: 'LineString', coordinates: line }, properties: {} } : EMPTY);
+  }
+  // Si el chofer mueve el mapa con el dedo, se deja de seguir al camión hasta que toque "Centrar"
+  map.on('dragstart', () => { if (mode === 'nav') { anim.follow = false; $('b-center').hidden = false; } });
+  $('b-center').addEventListener('click', () => { anim.follow = true; $('b-center').hidden = true; if (!anim.raf) anim.raf = requestAnimationFrame(frame); });
 
   async function goTo(place) {
     showErr('');
@@ -539,8 +601,10 @@
     if (!route) return;
     try { await getMe(); } catch (e) { showErr(e.message); return; }
     try { nav.audio = nav.audio || new (window.AudioContext || window.webkitAudioContext)(); nav.audio.resume(); } catch (e) { /* nada */ }
-    Object.assign(nav, { idx: 0, spoken: {}, off: 0, overSince: 0 });
+    Object.assign(nav, { idx: 0, spoken: {}, off: 0, overSince: 0, joined: false });
+    anim.follow = true; $('b-center').hidden = true;
     setMode('nav'); requestWake(); startWatch();
+    map.setPadding({ top: Math.round(innerHeight * 0.42), bottom: 100, left: 0, right: 0 });
     saveTrip(); downloadCorridor(route);
     speak('Vamos. ' + (route.steps[0] ? route.steps[0].text : ''));
     navTick();
@@ -574,7 +638,7 @@
     try {
       const rt = await requestRoute({ lat: me.lat, lon: me.lon }, route.to);
       route = rt; drawRoute(rt);
-      Object.assign(nav, { idx: 0, spoken: {}, off: 0 });
+      Object.assign(nav, { idx: 0, spoken: {}, off: 0, joined: false });
       hideAlert(); navTick(); saveTrip(); downloadCorridor(rt);
     } catch (e) {
       if (!navigator.onLine || /fetch|network/i.test(e.message)) { nav.lastReroute = Date.now() - 20000; showAlert('Sin señal: volvé a la línea azul. Recalculo cuando vuelva la señal.', 'orange'); }
@@ -611,8 +675,27 @@
     nav.idx = bi;
     const done = route.cum[bi] + bt * (route.cum[bi + 1] - route.cum[bi]);
     const left = Math.max(0, route.total - done);
-    const head = (me.speed > 5 && me.heading) ? me.heading : bearing(c[bi], c[Math.min(c.length - 1, bi + 3)]);
-    map.easeTo({ center: [me.lon, me.lat], zoom: me.speed > 60 ? 15.5 : 16.5, bearing: head, pitch: 55, duration: 900, offset: [0, innerHeight * 0.18] });
+    const b2 = Math.min(c.length - 1, bi + 1);
+    const onRoad = [c[bi][0] + (c[b2][0] - c[bi][0]) * bt, c[bi][1] + (c[b2][1] - c[bi][1]) * bt];
+    let ahead = bi + 1; while (ahead < c.length - 1 && route.cum[ahead] - done < 30) ahead++;
+    const roadHead = bearing(onRoad, c[ahead]);
+    if (best < 30) setTarget(onRoad[0], onRoad[1], roadHead);              // pegado a la calle
+    else setTarget(me.lat, me.lon, me.speed > 5 ? me.heading : roadHead);
+    anim.zoomTo = me.speed > 70 ? 15.2 : me.speed > 40 ? 15.8 : 16.6;
+
+    // Saliendo de un barrio privado o de un predio: línea punteada hasta la ruta, sin recalcular
+    if (!nav.joined && best < 40) { nav.joined = true; setConnector(null); }
+    if (!nav.joined) {
+      setConnector([[me.lon, me.lat], [onRoad[1], onRoad[0]]]);
+      $('turn-arrow').innerHTML = arrowSVG(6);
+      $('turn-dist').textContent = km(best);
+      $('turn-text').textContent = 'Salí hasta la calle de la ruta (línea azul)';
+      $('eta-left').textContent = km(left + best);
+      $('eta-time').textContent = `Llegás ${clock(route.time * left / route.total)}`;
+      if (!nav.spoken.join) { nav.spoken.join = 1; speak('Salí hasta la línea azul y ahí arranca la ruta.'); }
+      if (best > 3000 && Date.now() - nav.lastReroute > 60000) reroute(false);
+      return;
+    }
 
     $('eta-left').textContent = km(left);
     $('eta-time').textContent = `Llegás ${clock(route.time * left / route.total)}`;
