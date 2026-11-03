@@ -30,6 +30,7 @@
       <button type="button" role="tab" data-tab="camiones">Camiones</button>
       <button type="button" role="tab" data-tab="lugares">Lugares</button>
       <button type="button" role="tab" data-tab="calles">Calles</button>
+      <button type="button" role="tab" data-tab="fotomultas">Fotomultas</button>
       <button type="button" role="tab" data-tab="ajustes">Ajustes</button>
     </nav>
 
@@ -110,6 +111,19 @@
       <div class="list" id="calles"></div>
     </section>
 
+    <!-- Fotomultas -->
+    <section class="pane" data-pane="fotomultas" hidden>
+      <h2>Fotomultas</h2>
+      <p class="tip">La app avisa a unos 500 metros ("Fotomulta a 400 m, máximo 130") y suena si el camión va más rápido que la máxima. Se ven en el mapa como carteles azules.</p>
+      <div class="card">
+        <p id="cam-resumen" class="tip"></p>
+        <span class="inline"><button type="button" class="btn go sm" id="b-osm">Traer de OpenStreetMap</button><button type="button" class="btn ghost sm" id="b-cam">Marcar una en el mapa</button></span>
+        <p class="tip" style="margin-top:8px">OpenStreetMap trae las cámaras de todo el país que cargó la comunidad (no están todas). Las que falten, marcalas a mano: tocá el lugar exacto en el mapa y poné la máxima.</p>
+      </div>
+      <h2>Cargadas a mano</h2>
+      <div class="list" id="cams"></div>
+    </section>
+
     <!-- Ajustes -->
     <section class="pane" data-pane="ajustes" hidden>
       <h2>Velocidad máxima</h2>
@@ -124,6 +138,15 @@
         <button type="button" class="btn ghost sm" id="b-sitrack">Probar ahora</button>
         <p class="tip" style="margin-top:8px">Cada minuto se trae la última posición de las unidades de Sitrack. Cada unidad se asocia al camión con la misma patente.</p>
       </div>
+      <h2>Administradores</h2>
+      <p class="tip">Entran a este panel (también desde el celular) con su email y contraseña. Pueden hacer todo, salvo crear o borrar administradores.</p>
+      <div class="list" id="admins"></div>
+      <form class="card form" id="f-admin" hidden>
+        <label class="wide">Nombre<input name="nombre" type="text" required maxlength="80" placeholder="Ej.: María (administración)"></label>
+        <label>Email<input name="email" type="email" required autocomplete="off"></label>
+        <label>Contraseña<input name="clave" type="text" required minlength="8" autocomplete="off"></label>
+        <button type="submit" class="btn go wide">Crear administrador</button>
+      </form>
     </section>
   </aside>
   <div id="map" aria-label="Mapa de la flota"></div>

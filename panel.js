@@ -53,6 +53,8 @@
     ]);
     if (!ra.error) D.rastreo = ra.data;          // si todavía no está la parte de Sitrack, se ignora
     if (!st.error) D.sitrack = st.data;
+    const ad = await sb.from('perfiles').select('*').in('rol', ['dueno', 'admin']).order('nombre');
+    if (!ad.error) D.admins = ad.data;
     for (const [k, r] of Object.entries({ choferes: ch, camiones: ca, lugares: lu, viajes: vi, posiciones: po, alertas: al, bloqueos: bl })) {
       if (r.error) fail(r.error, 'No se pudo cargar ' + k); else D[k] = r.data;
     }
@@ -88,10 +90,13 @@
     map.addSource('plan', { type: 'geojson', data: EMPTY });
     map.addLayer({ id: 'plan-borde', type: 'line', source: 'plan', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 8 } });
     map.addLayer({ id: 'plan', type: 'line', source: 'plan', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#12873e', 'line-width': 5 } });
+    map.addSource('radares', { type: 'geojson', data: EMPTY });
+    map.addLayer({ id: 'radares', type: 'circle', source: 'radares', minzoom: 7, paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 7, 3, 14, 7], 'circle-color': '#1d3f9a', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
     map.addSource('bloqueos', { type: 'geojson', data: EMPTY });
     map.addLayer({ id: 'bloqueos', type: 'circle', source: 'bloqueos', paint: { 'circle-radius': 8, 'circle-color': '#e07a00', 'circle-stroke-color': '#fff', 'circle-stroke-width': 3 } });
-    drawBloqueos(); drawRutas();
+    drawBloqueos(); drawRutas(); drawCams();
   }
+  map.on('click', 'radares', e => { if (picking) return; const r = byId(D.radares, e.features[0].properties.id); if (r) camPopup(r); });
   function drawRutas() {
     const s = map.getSource && map.getSource('rutas'); if (!s) return;
     s.setData({ type: 'FeatureCollection', features: D.posiciones.filter(p => p.ruta && p.ruta.coordinates && p.ruta.coordinates.length > 1 && !isStale(p))
@@ -210,7 +215,7 @@
   function renderAll() {
     fillSelects(); renderLive(); renderAlerts(); renderViajes(); renderChoferes(); renderCamiones(); renderLugares(); renderCalles();
     $('f-ajustes').velocidad_max.value = D.ajustes.velocidad_max;
-    renderSitrack();
+    renderSitrack(); renderAdmins();
     drawTrucks(); drawSat(); drawLugares(); drawBloqueos(); drawRutas(); frameAll();
   }
   const opts = (arr, label, empty) => (empty != null ? `<option value="">${esc(empty)}</option>` : '') + arr.map(x => `<option value="${esc(x.id)}">${esc(label(x))}</option>`).join('');
@@ -283,7 +288,7 @@
       const sub = [fechaTxt(v.fecha), c ? c.nombre : 'Sin chofer', t && t.nombre, o && 'desde ' + o.nombre, rutaTxt, v.notas].filter(Boolean).join(' · ');
       const acts = (v.ruta ? `<button type="button" class="btn ghost sm" data-ruta="${v.id}">Ver ruta</button>` : '') +
         (v.estado === 'pendiente' || v.estado === 'en_curso' ? `<button type="button" class="btn danger sm" data-cancel="${v.id}">Cancelar</button>` : `<button type="button" class="btn danger sm" data-del="${v.id}">Borrar</button>`);
-      return `<div class="row stack"><span class="ico">${d ? (TIPO[d.tipo] || TIPO.otro)[0] : '❓'}</span><span><span class="t">${esc(d ? d.nombre : 'Destino borrado')} <span class="state ${v.estado}">${ESTADO[v.estado]}</span></span><br><span class="m">${esc(sub)}</span></span><span class="acts">${acts}</span></div>`;
+      return `<div class="row stack"><span class="ico">${d ? (TIPO[d.tipo] || TIPO.otro)[0] : '❓'}</span><span><span class="t">${esc(d ? d.nombre.replace(VIAJE_PREF, '') : 'Destino borrado')} <span class="state ${v.estado}">${ESTADO[v.estado]}</span></span><br><span class="m">${esc(sub)}</span></span><span class="acts">${acts}</span></div>`;
     }).join('');
   }
   // "Otra dirección…": buscar una dirección (o tocar el mapa) sin tener que cargarla antes en Lugares
@@ -571,6 +576,103 @@
     upsertLocal('bloqueos', row, true); renderCalles(); drawBloqueos(); toast('Calle marcada: las rutas de todos la esquivan.');
   }, 'Tocá en el mapa la calle por donde no se puede pasar'));
 
+  // ---------- Fotomultas ----------
+  D.radares = []; D.admins = [];
+  async function loadRadares() {
+    const out = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await sb.from('radares').select('*').eq('activo', true).order('id').range(from, from + 999);
+      if (error) return;                       // todavía no está la tabla
+      out.push(...data); if (data.length < 1000) break;
+    }
+    D.radares = out; renderCams(); drawCams();
+  }
+  function renderCams() {
+    const osm = D.radares.filter(r => r.fuente === 'osm').length, man = D.radares.filter(r => r.fuente === 'manual');
+    $('cam-resumen').textContent = D.radares.length ? `${D.radares.length} fotomultas cargadas: ${osm} de OpenStreetMap y ${man.length} a mano.` : 'Todavía no hay fotomultas cargadas. Empezá trayéndolas de OpenStreetMap.';
+    $('cams').innerHTML = man.length ? man.map(r => `<div class="row"><span class="ico">📷</span><span><span class="t">${r.maxima ? 'Máxima ' + r.maxima + ' km/h' : 'Sin máxima'}</span><br><span class="m">${esc([r.nota, 'marcó ' + quien(r.creado_por), hace(r.creado)].filter(Boolean).join(' · '))}</span></span>
+      <span class="acts"><button type="button" class="btn ghost sm" data-cfly="${r.id}">Ver</button><button type="button" class="btn danger sm" data-cdel="${r.id}">Borrar</button></span></div>`).join('') : '<p class="empty">Ninguna todavía.</p>';
+  }
+  function drawCams() {
+    const s = map.getSource && map.getSource('radares'); if (!s) return;
+    s.setData({ type: 'FeatureCollection', features: D.radares.map(r => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [r.lon, r.lat] }, properties: { id: r.id } })) });
+  }
+  function camPopup(r) {
+    const div = document.createElement('div');
+    div.innerHTML = `<b>📷 Fotomulta${r.maxima ? ' · máx. ' + r.maxima + ' km/h' : ''}</b><br><span>${r.fuente === 'osm' ? 'De OpenStreetMap' : 'Marcada por ' + esc(quien(r.creado_por))}</span>
+      <div class="inline" style="margin-top:8px"><button type="button" class="btn ghost sm" data-e>Cambiar máxima</button><button type="button" class="btn danger sm" data-d>Borrar</button></div>`;
+    const pop = new maplibregl.Popup().setLngLat([r.lon, r.lat]).setDOMContent(div).addTo(map);
+    div.querySelector('[data-e]').addEventListener('click', async () => {
+      const v = prompt('Velocidad máxima de esta fotomulta (km/h):', r.maxima || ''); if (v === null) return;
+      const n = parseInt(v, 10); if (!(n >= 10 && n <= 150)) { toast('Poné un número entre 10 y 150.', true); return; }
+      const row = await q(sb.from('radares').update({ maxima: n }).eq('id', r.id).select().single(), 'No se pudo cambiar');
+      upsertLocal('radares', row); pop.remove(); renderCams();
+    });
+    div.querySelector('[data-d]').addEventListener('click', async () => {
+      if (!confirm('¿Borrar esta fotomulta?')) return;
+      await q(sb.from('radares').delete().eq('id', r.id), 'No se pudo borrar');
+      D.radares = D.radares.filter(x => x.id !== r.id); pop.remove(); renderCams(); drawCams();
+    });
+  }
+  $('cams').addEventListener('click', async e => {
+    const b = e.target.closest('button'); if (!b) return;
+    const r = byId(D.radares, b.dataset.cfly || b.dataset.cdel); if (!r) return;
+    if (b.dataset.cfly) { fly(r.lon, r.lat, 16); camPopup(r); }
+    if (b.dataset.cdel && confirm('¿Borrar esta fotomulta?')) {
+      await q(sb.from('radares').delete().eq('id', r.id), 'No se pudo borrar');
+      D.radares = D.radares.filter(x => x.id !== r.id); renderCams(); drawCams();
+    }
+  });
+  $('b-cam').addEventListener('click', () => startPick(async (lat, lon) => {
+    const v = prompt('Velocidad máxima de la fotomulta (km/h). Dejalo vacío si no la sabés:', '80'); if (v === null) return;
+    const n = v.trim() ? parseInt(v, 10) : null;
+    if (n !== null && !(n >= 10 && n <= 150)) { toast('Poné un número entre 10 y 150.', true); return; }
+    const row = await q(sb.from('radares').insert({ lat: +lat.toFixed(6), lon: +lon.toFixed(6), maxima: n, creado_por: me.id }).select().single(), 'No se pudo marcar');
+    D.radares.push(row); renderCams(); drawCams(); toast('Fotomulta cargada: les avisa a todos los choferes.');
+  }, 'Tocá en el mapa el lugar exacto de la fotomulta'));
+  $('b-osm').addEventListener('click', async () => {
+    const b = $('b-osm'); b.disabled = true; b.textContent = 'Trayendo… (puede tardar 1 o 2 minutos)';
+    try {
+      const r = await N.funcion('radares', {});
+      if (r.ok && r.data.ok) { toast(`Listo: ${r.data.total} fotomultas de OpenStreetMap (${r.data.conMaxima} con velocidad máxima).`); await loadRadares(); }
+      else toast('OpenStreetMap: ' + (r.data.error || 'no respondió. Probá de nuevo en un rato.'), true);
+    } catch (e) { fail(e, 'OpenStreetMap'); } finally { b.disabled = false; b.textContent = 'Traer de OpenStreetMap'; }
+  });
+
+  // ---------- Administradores ----------
+  function renderAdmins() {
+    const box = $('admins'); if (!box) return;
+    const soyDueno = me && me.rol === 'dueno';
+    box.innerHTML = D.admins.map(a => `<div class="row stack"><span class="ico">${a.rol === 'dueno' ? '👑' : '🧑‍💼'}</span><span><span class="t">${esc(a.nombre)}${me && a.id === me.id ? ' (vos)' : ''}</span><br><span class="m">${a.rol === 'dueno' ? 'Dueño' : 'Administrador'}${a.email ? ' · ' + esc(a.email) : ''}</span></span>
+      <span class="acts">${soyDueno && a.rol === 'admin' ? `<button type="button" class="btn ghost sm" data-aclave="${a.id}">Nueva contraseña</button><button type="button" class="btn danger sm" data-adel="${a.id}">Borrar</button>` : ''}</span></div>`).join('');
+  }
+  $('admins').addEventListener('click', async e => {
+    const b = e.target.closest('button'); if (!b) return;
+    const a = byId(D.admins, b.dataset.aclave || b.dataset.adel); if (!a) return;
+    if (b.dataset.aclave) {
+      const clave = prompt(`Nueva contraseña para ${a.nombre} (mínimo 8 caracteres):`, ''); if (!clave) return;
+      const r = await N.funcion('choferes', { accion: 'clave_admin', id: a.id, clave });
+      toast(r.ok ? 'Contraseña cambiada. Tiene que volver a entrar.' : (r.data.error?.message || 'No se pudo'), !r.ok);
+    }
+    if (b.dataset.adel && confirm(`¿Borrar a ${a.nombre}? No va a poder entrar más al panel.`)) {
+      const r = await N.funcion('choferes', { accion: 'borrar_admin', id: a.id });
+      if (!r.ok) { toast(r.data.error?.message || 'No se pudo borrar', true); return; }
+      D.admins = D.admins.filter(x => x.id !== a.id); renderAdmins(); toast(`${a.nombre} borrado`);
+    }
+  });
+  $('f-admin').addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = e.target, btn = f.querySelector('[type=submit]'); btn.disabled = true;
+    try {
+      const r = await N.funcion('choferes', { accion: 'crear_admin', nombre: f.nombre.value.trim(), email: f.email.value.trim(), clave: f.clave.value });
+      if (!r.ok) { toast(r.data.error?.message || 'No se pudo crear', true); return; }
+      toast(`Listo: ${f.nombre.value.trim()} entra al panel con ${f.email.value.trim()} y la contraseña que pusiste.`);
+      f.reset();
+      const ad = await sb.from('perfiles').select('*').in('rol', ['dueno', 'admin']).order('nombre');
+      if (!ad.error) { D.admins = ad.data; renderAdmins(); }
+    } finally { btn.disabled = false; }
+  });
+
   // ---------- Rastreador satelital (Sitrack) ----------
   function renderSitrack() {
     const box = $('sitrack'); if (!box) return;
@@ -636,6 +738,7 @@
         later();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'viajes' }, later)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'radares' }, p => { if (p.new.fuente === 'manual' && !byId(D.radares, p.new.id)) { D.radares.push(p.new); renderCams(); drawCams(); } })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rastreo' }, p => {
         if (p.eventType === 'DELETE') D.rastreo = D.rastreo.filter(x => x.asset_id !== p.old.asset_id);
         else { const i = D.rastreo.findIndex(x => x.asset_id === p.new.asset_id); if (i >= 0) D.rastreo[i] = p.new; else D.rastreo.push(p.new); }
@@ -654,15 +757,16 @@
     if (!s) { $('login').hidden = false; $('layout').hidden = true; return; }
     let p = null;
     try { p = await N.cargarPerfil(true); } catch (e) { /* abajo */ }
-    if (!p || p.rol !== 'dueno') {
+    if (!p || (p.rol !== 'dueno' && p.rol !== 'admin')) {
       await N.salir();
-      $('login-err').textContent = 'Este panel es solo para el dueño. Los choferes usan la app.'; $('login-err').hidden = false;
+      $('login-err').textContent = 'Este panel es solo para el dueño y los administradores. Los choferes usan la app.'; $('login-err').hidden = false;
       $('login').hidden = false; $('layout').hidden = true; return;
     }
     me = p;
-    $('who').textContent = p.nombre; $('b-logout').hidden = false;
+    $('who').textContent = p.nombre + (p.rol === 'admin' ? ' · administrador' : ''); $('b-logout').hidden = false;
+    $('f-admin').hidden = p.rol !== 'dueno';
     $('login').hidden = true; $('layout').hidden = false; map.resize();
-    await loadAll(); subscribe();
+    await loadAll(); subscribe(); loadRadares();
     if ('Notification' in window && Notification.permission === 'default') document.addEventListener('click', () => Notification.requestPermission().catch(() => {}), { once: true });
   }
   $('f-login').addEventListener('submit', async e => {
