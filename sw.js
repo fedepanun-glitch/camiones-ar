@@ -1,7 +1,7 @@
 // Guarda la app para que abra rápido y sin señal. El mapa de calles y las rutas siempre necesitan conexión.
-const CACHE = 'camionesar-v1';
+const CACHE = 'camionesar-v2';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png',
-  'vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css', 'data/restricciones.json', 'data/propias.json'];
+  'vendor/maplibre/maplibre-gl.js', 'vendor/maplibre/maplibre-gl.css', 'data/restricciones.json', 'data/propias.json'];
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())));
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())));
 self.addEventListener('fetch', e => {

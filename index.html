@@ -2,124 +2,144 @@
 <html lang="es-AR">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>Camiones AR</title>
 <meta name="description" content="Rutas para camiones en Argentina que esquivan puentes bajos, límites de peso y calles prohibidas.">
 <meta name="theme-color" content="#17201f">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
-<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@500;600;700&display=swap">
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
-<div class="app">
-  <aside class="panel" id="panel" aria-label="Panel">
-    <header class="brand">
-      <div class="sign slash" aria-hidden="true"><svg viewBox="0 0 24 24" fill="#111"><path d="M2 7h11v8H2zM13 10h4l3 3v2h-7zM4 17.5a1.6 1.6 0 1 0 3.2 0 1.6 1.6 0 1 0-3.2 0M14 17.5a1.6 1.6 0 1 0 3.2 0 1.6 1.6 0 1 0-3.2 0"/></svg></div>
-      <div>
-        <h1>Camiones AR</h1>
-        <p>Rutas para tu camión que esquivan puentes bajos, pesos máximos y calles prohibidas.</p>
-      </div>
-    </header>
+<body data-mode="home">
+<div id="map" aria-label="Mapa"></div>
 
-    <nav class="tabs" role="tablist" aria-label="Secciones">
-      <button role="tab" id="t-viaje" aria-selected="true" aria-controls="p-viaje">Viaje</button>
-      <button role="tab" id="t-camion" aria-selected="false" aria-controls="p-camion">Mi camión</button>
-      <button role="tab" id="t-mapa" aria-selected="false" aria-controls="p-mapa">Restricciones</button>
-    </nav>
+<!-- Barra superior -->
+<div class="topbar">
+  <button type="button" class="round" id="b-menu" aria-label="Ajustes">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+  </button>
+  <button type="button" class="truck-chip" id="b-truck" aria-label="Elegir camión">
+    <span class="truck-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M2 7h11v8H2zM13 10h4l3 3v2h-7zM4 17.5a1.6 1.6 0 1 0 3.2 0 1.6 1.6 0 1 0-3.2 0M14 17.5a1.6 1.6 0 1 0 3.2 0 1.6 1.6 0 1 0-3.2 0"/></svg></span>
+    <span id="truck-name">Camión</span>
+  </button>
+  <button type="button" class="round" id="b-locate" aria-label="Ir a mi ubicación">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3" stroke="currentColor" stroke-width="2"/></svg>
+  </button>
+</div>
 
-    <!-- VIAJE -->
-    <section id="p-viaje" role="tabpanel" aria-labelledby="t-viaje" class="tabpanel">
-      <form id="f-route" class="stack" autocomplete="off">
-        <div class="field">
-          <label for="q-from">Desde</label>
-          <div class="search-row">
-            <input id="q-from" type="search" placeholder="Mi ubicación" enterkeyhint="search">
-            <button type="button" id="b-gps" class="icon-btn" title="Usar mi ubicación" aria-label="Usar mi ubicación">◎</button>
-          </div>
-          <div class="results" id="r-from" hidden></div>
-        </div>
-        <div class="field">
-          <label for="q-to">Hasta</label>
-          <input id="q-to" type="search" placeholder="Dirección, empresa o ciudad" enterkeyhint="search">
-          <div class="results" id="r-to" hidden></div>
-        </div>
-        <p class="hint">Escribí y apretá Enter para buscar. También podés tocar el mapa para elegir el destino.</p>
-        <button type="submit" class="primary" id="b-route">Armar ruta para mi camión</button>
-      </form>
-
-      <div id="route-out" class="stack" hidden>
-        <div class="summary" id="summary"></div>
-        <div class="warn-box" id="warns"></div>
-        <div class="btns">
-          <button type="button" class="primary" id="b-nav">Iniciar navegación</button>
-          <button type="button" id="b-clear">Borrar ruta</button>
-        </div>
-        <details>
-          <summary>Indicaciones paso a paso</summary>
-          <ol class="steps" id="steps"></ol>
-        </details>
-      </div>
-      <p class="error" id="err" role="alert" hidden></p>
-    </section>
-
-    <!-- CAMIÓN -->
-    <section id="p-camion" role="tabpanel" aria-labelledby="t-camion" class="tabpanel" hidden>
-      <div class="truck">
-        <div class="field"><label for="f-h">Altura (m)</label><input id="f-h" type="number" inputmode="decimal" step="0.05" min="1" max="6"></div>
-        <div class="field"><label for="f-w">Peso cargado (t)</label><input id="f-w" type="number" inputmode="decimal" step="0.5" min="1" max="80"></div>
-        <div class="field"><label for="f-l">Largo (m)</label><input id="f-l" type="number" inputmode="decimal" step="0.5" min="3" max="30"></div>
-        <div class="field"><label for="f-wd">Ancho (m)</label><input id="f-wd" type="number" inputmode="decimal" step="0.05" min="1.5" max="4"></div>
-        <div class="field"><label for="f-e">Peso por eje (t)</label><input id="f-e" type="number" inputmode="decimal" step="0.5" min="1" max="20"></div>
-        <label class="check" for="f-hz"><input id="f-hz" type="checkbox"> Lleva carga peligrosa</label>
-      </div>
-      <p class="hint">Valores de ejemplo para un Hi-Way con semi. Cargá las medidas reales de tu camión: se guardan en este celular. Una altura con menos de 20 cm de margen se marca "al límite".</p>
-      <div class="field">
-        <label for="f-key">Clave de rutas (OpenRouteService)</label>
-        <input id="f-key" type="password" autocomplete="off" placeholder="Pegá la clave una sola vez">
-        <p class="hint">Se guarda solo en este celular. Sin clave se ve el mapa pero no se pueden armar rutas.</p>
-      </div>
-    </section>
-
-    <!-- RESTRICCIONES -->
-    <section id="p-mapa" role="tabpanel" aria-labelledby="t-mapa" class="tabpanel" hidden>
-      <div class="tally"><b id="n-aff">0</b><span id="n-txt">restricciones afectan a tu camión</span></div>
-      <div class="chips" id="chips"></div>
-      <label class="check" for="f-only"><input id="f-only" type="checkbox" checked> Solo lo que afecta a mi camión</label>
-      <div class="row2">
-        <div class="field"><label for="f-prov">Provincia</label><select id="f-prov"><option value="">Todo el país</option></select></div>
-        <div class="field"><label for="f-q">Buscar calle</label><input id="f-q" type="search" placeholder="General Paz…"></div>
-      </div>
-      <h2>En esta zona del mapa</h2>
-      <div class="list" id="list"></div>
-      <div class="more" id="more"></div>
-      <details>
-        <summary>De tu planilla (<span id="own-n">0</span>)</summary>
-        <p class="hint">Filas de la pestaña "Restricciones" que todavía no tienen coordenadas.</p>
-        <div class="own" id="own"></div>
-      </details>
-    </section>
-
-    <footer class="attr">
-      <button type="button" id="b-install" hidden>Instalar en el celular</button>
-      <p>Mapa, restricciones y rutas: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a> (ODbL). Rutas calculadas con <a href="https://openrouteservice.org" target="_blank" rel="noopener">openrouteservice</a>. Puede haber errores: verificá en el lugar antes de pasar.</p>
-    </footer>
-  </aside>
-
-  <div class="map-wrap">
-    <div id="map" role="region" aria-label="Mapa"></div>
-    <div class="nav-banner" id="nav-banner" hidden>
-      <div class="nb-dist" id="nb-dist"></div>
-      <div class="nb-text" id="nb-text"></div>
-      <div class="nb-meta" id="nb-meta"></div>
-      <button type="button" id="b-stop">Terminar</button>
-    </div>
+<!-- Navegación: indicación grande arriba -->
+<div class="turn" id="turn" hidden>
+  <div class="turn-arrow" id="turn-arrow" aria-hidden="true"></div>
+  <div class="turn-body">
+    <div class="turn-dist" id="turn-dist"></div>
+    <div class="turn-text" id="turn-text"></div>
   </div>
 </div>
-<script src="vendor/leaflet/leaflet.js"></script>
+<div class="alert-banner" id="alert" role="alert" hidden></div>
+
+<!-- Navegación: barra de abajo -->
+<div class="navbar" id="navbar" hidden>
+  <div class="speed" id="speed" aria-live="polite"><b id="speed-n">0</b><small>km/h</small></div>
+  <div class="eta"><b id="eta-left"></b><span id="eta-time"></span></div>
+  <button type="button" class="big warn" id="b-cant">No puedo<br>pasar</button>
+  <button type="button" class="big gray" id="b-stop">Terminar</button>
+</div>
+
+<!-- Hoja de abajo -->
+<section class="sheet" id="sheet" aria-label="Viaje">
+  <!-- Inicio -->
+  <div class="view" id="v-home">
+    <form id="f-search" class="search" autocomplete="off">
+      <label for="q" class="sr">¿A dónde vas?</label>
+      <input id="q" type="search" placeholder="¿A dónde vas?" enterkeyhint="search">
+      <button type="submit" class="go-search" aria-label="Buscar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.6"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/></svg>
+      </button>
+    </form>
+    <div class="favs" id="favs"></div>
+    <p class="tip">También podés tocar el mapa donde querés ir.</p>
+  </div>
+
+  <!-- Resultados -->
+  <div class="view" id="v-results" hidden>
+    <div class="list" id="results"></div>
+    <button type="button" class="big gray full" data-back>Volver</button>
+  </div>
+
+  <!-- Vista previa de la ruta -->
+  <div class="view" id="v-preview" hidden>
+    <div class="dest" id="dest-name"></div>
+    <div class="nums"><div><b id="p-km"></b><span>distancia</span></div><div><b id="p-time"></b><span>tiempo</span></div></div>
+    <button type="button" class="checks" id="b-checks" hidden></button>
+    <div class="list" id="checks" hidden></div>
+    <button type="button" class="big go full" id="b-go">IR</button>
+    <div class="row">
+      <button type="button" class="big gray" data-back>Cancelar</button>
+      <button type="button" class="big gray" id="b-fav">★ Guardar</button>
+    </div>
+    <p class="tip">Si la ruta pasa por una calle que no se puede, tocá esa parte de la línea azul y elegí "Evitar".</p>
+  </div>
+
+  <!-- Cargando -->
+  <div class="view" id="v-loading" hidden><p class="loading" id="loading-text">Armando la ruta para tu camión…</p></div>
+
+  <p class="error" id="err" role="alert" hidden></p>
+</section>
+
+<!-- Ajustes (para el dueño) -->
+<dialog id="settings" aria-labelledby="set-title">
+  <form method="dialog" class="dlg">
+    <header class="dlg-head"><h2 id="set-title">Ajustes</h2><button class="round" value="close" aria-label="Cerrar">✕</button></header>
+
+    <section class="dlg-sec">
+      <h3>Camiones</h3>
+      <div id="trucks" class="trucks"></div>
+      <button type="button" class="big gray full" id="b-add-truck">+ Agregar camión</button>
+    </section>
+
+    <section class="dlg-sec">
+      <h3>Velocidad máxima</h3>
+      <div class="field-row"><input id="s-speed" type="number" inputmode="numeric" min="40" max="130" step="5"><span>km/h. Avisa con sonido y voz si el camión la pasa.</span></div>
+    </section>
+
+    <section class="dlg-sec">
+      <h3>Calles evitadas</h3>
+      <p class="tip">Lugares marcados como "No puedo pasar". Las rutas los esquivan.</p>
+      <div id="avoids" class="list"></div>
+    </section>
+
+    <section class="dlg-sec">
+      <h3>Mapa</h3>
+      <label class="check"><input id="s-restr" type="checkbox"> Mostrar todas las restricciones que afectan al camión</label>
+    </section>
+
+    <section class="dlg-sec">
+      <h3>Clave de rutas</h3>
+      <input id="s-key" type="password" autocomplete="off" placeholder="Clave de OpenRouteService">
+      <p class="tip">Se pega una sola vez. Se guarda en este celular.</p>
+    </section>
+
+    <section class="dlg-sec">
+      <button type="button" class="big gray full" id="b-install" hidden>Instalar en el celular</button>
+      <p class="tip">Mapa y restricciones © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a> (ODbL). Estilo de mapa: <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>. Rutas: <a href="https://openrouteservice.org" target="_blank" rel="noopener">openrouteservice</a>. Puede haber errores: respetá siempre la señalización.</p>
+    </section>
+  </form>
+</dialog>
+
+<!-- Elegir camión -->
+<dialog id="pick-truck" aria-labelledby="pt-title">
+  <form method="dialog" class="dlg">
+    <header class="dlg-head"><h2 id="pt-title">¿Qué camión manejás?</h2><button class="round" value="close" aria-label="Cerrar">✕</button></header>
+    <div id="pt-list" class="list"></div>
+  </form>
+</dialog>
+
+<script src="vendor/maplibre/maplibre-gl.js"></script>
+<script src="config.js" onerror="void 0"></script>
 <script src="app.js"></script>
 </body>
 </html>

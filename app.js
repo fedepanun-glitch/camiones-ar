@@ -1,17 +1,37 @@
-/* Camiones AR: mapa de restricciones + ruta para camión con OpenRouteService + navegación con GPS. */
+/* Camiones AR — app para choferes.
+   Mapa vectorial (MapLibre + OpenFreeMap), rutas para camión (openrouteservice), navegación con voz,
+   alerta de velocidad y "No puedo pasar" para esquivar calles que en la realidad no sirven. */
 (() => {
   'use strict';
   const ORS = 'https://api.openrouteservice.org';
+  const STYLE = 'https://tiles.openfreemap.org/styles/liberty';
   const $ = id => document.getElementById(id);
-  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const fmt = n => String(n).replace('.', ',');
+  const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const store = {
     get(k, d) { try { const v = localStorage.getItem('camionesar.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem('camionesar.' + k, JSON.stringify(v)); } catch (e) { /* sin almacenamiento */ } },
   };
+  const km = m => m >= 1000 ? `${fmt((m / 1000).toFixed(m >= 10000 ? 0 : 1))} km` : `${Math.max(10, Math.round(m / 10) * 10)} m`;
+  const hm = s => { const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60); return h ? `${h} h ${m} min` : `${m} min`; };
+  const clock = s => new Date(Date.now() + s * 1000).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
 
-  // ---------- Tipos de restricción ----------
+  // ---------- Configuración ----------
+  const CFG = window.CAMIONES_CONFIG || {};
+  const key = () => (store.get('key', '') || CFG.orsKey || '').trim();
+  let speedLimit = store.get('speedLimit', CFG.speedLimit || 80);
+  const EXAMPLE_TRUCKS = [
+    { id: 't1', name: 'Hi-Way con semi (ejemplo)', h: 4.1, w: 45, l: 20, wd: 2.6, e: 10.5, hz: true },
+    { id: 't2', name: 'Tector (ejemplo)', h: 3.6, w: 17, l: 10, wd: 2.6, e: 10, hz: true },
+  ];
+  let trucks = store.get('trucks', CFG.trucks || EXAMPLE_TRUCKS);
+  let truckId = store.get('truckId', trucks[0] && trucks[0].id);
+  const truck = () => trucks.find(t => t.id === truckId) || trucks[0];
+  let avoids = store.get('avoids', []);   // [{lat, lon, label, at}]
+  let favs = store.get('favs', []);       // [{label, lat, lon}]
+
+  // ---------- Restricciones ----------
   const TYPES = {
     P: { name: 'Prohibido camiones', key: 'hgv', color: '--t-p' },
     D: { name: 'Solo con destino', key: 'hgv', color: '--t-a' },
@@ -31,302 +51,248 @@
     s = s.replace(',', '.').replace(/\s*(m|mts|metros|t|tn|ton|toneladas)\.?$/, '');
     return /^\d+(\.\d+)?$/.test(s) ? parseFloat(s) : NaN;
   }
-
-  // ---------- Camión ----------
-  const DEFAULTS = { h: 4.1, w: 45, l: 20, wd: 2.6, e: 10.5, hz: true };
-  const truck = Object.assign({}, DEFAULTS, store.get('truck', {}));
-  const tin = { h: $('f-h'), w: $('f-w'), l: $('f-l'), wd: $('f-wd'), e: $('f-e') };
-  for (const k in tin) tin[k].value = truck[k];
-  $('f-hz').checked = !!truck.hz;
-  $('f-key').value = store.get('key', '');
-
+  let rows = [];
   function verdict(r) {
+    const T = truck();
     if (r.t === 'P') return 'no';
     if (r.t === 'D') return 'warn';
-    if (r.t === 'H') return truck.hz ? 'no' : 'ok';
+    if (r.t === 'H') return T.hz ? 'no' : 'ok';
     if (r.dubious) return 'dud';
-    const lim = { A: truck.h, W: truck.w, L: truck.l, E: truck.e }[r.t];
+    const lim = { A: T.h, W: T.w, L: T.l, E: T.e }[r.t];
     if (r.num < lim) return 'no';
     if (r.t === 'A' && r.num - lim < 0.2) return 'warn';
     return 'ok';
   }
-  const VTXT = { no: 'No pasa', warn: 'Solo con destino', ok: 'Pasa', dud: 'Dato dudoso' };
-  const vlabel = r => (r.v === 'warn' && r.t === 'A') ? 'Al límite' : VTXT[r.v];
-  const VCLS = { no: 'v-no', warn: 'v-warn', ok: 'v-ok', dud: 'v-dud' };
-  const TRUCK_SVG = '<svg viewBox="0 0 24 24" fill="#111"><path d="M2 7h11v8H2zM13 10h4l3 3v2h-7zM4 17.5a1.6 1.6 0 1 0 3.2 0 1.6 1.6 0 1 0-3.2 0M14 17.5a1.6 1.6 0 1 0 3.2 0 1.6 1.6 0 1 0-3.2 0"/></svg>';
-  function signHTML(r, sm) {
-    const c = 'sign' + (sm ? ' sm' : '');
-    if (r.t === 'P' || r.t === 'D') return `<div class="${c} slash" aria-hidden="true">${TRUCK_SVG}</div>`;
-    if (r.t === 'H') return `<div class="${c} slash" aria-hidden="true" style="font-size:${sm ? 9 : 11}px">ONU</div>`;
-    return `<div class="${c}" aria-hidden="true">${Number.isFinite(r.num) ? fmt(r.num) : '?'}</div>`;
-  }
+  const vlabel = r => r.v === 'no' ? 'No pasa' : r.v === 'warn' ? (r.t === 'A' ? 'Al límite' : 'Solo con destino') : r.v === 'dud' ? 'Dato dudoso' : 'Pasa';
   function describe(r) {
     const T = TYPES[r.t];
-    if (r.t === 'P') return 'Prohibido el paso de camiones';
-    if (r.t === 'D') return 'Camiones solo con destino en la zona';
-    if (r.t === 'H') return 'Prohibido para cargas peligrosas';
-    if (r.dubious) return `${T.name}: "${esc(r.raw)}" (valor mal cargado)`;
-    return `${T.name}: ${fmt(r.num)} ${T.unit}`;
+    if (r.t === 'P') return 'Prohibido para camiones';
+    if (r.t === 'D') return 'Camiones solo con destino';
+    if (r.t === 'H') return 'Prohibido carga peligrosa';
+    if (r.dubious) return `${T.name}: dato mal cargado`;
+    return `${T.name} ${fmt(r.num)} ${T.unit}`;
+  }
+  const TRUCK_SVG = '<svg viewBox="0 0 24 24" fill="#111"><path d="M2 7h11v8H2zM13 10h4l3 3v2h-7zM4 17.5a1.6 1.6 0 1 0 3.2 0 1.6 1.6 0 1 0-3.2 0M14 17.5a1.6 1.6 0 1 0 3.2 0 1.6 1.6 0 1 0-3.2 0"/></svg>';
+  function signHTML(r) {
+    if (r.t === 'P' || r.t === 'D') return `<div class="sign slash" aria-hidden="true">${TRUCK_SVG}</div>`;
+    if (r.t === 'H') return '<div class="sign slash" aria-hidden="true" style="font-size:11px">ONU</div>';
+    return `<div class="sign" aria-hidden="true">${Number.isFinite(r.num) ? fmt(r.num) : '?'}</div>`;
   }
 
   // ---------- Mapa ----------
-  const map = L.map('map', { preferCanvas: true, zoomControl: true, minZoom: 4, maxZoom: 19 });
-  map.attributionControl.setPrefix(false);
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a>',
-  }).addTo(map);
-  const renderer = L.canvas({ padding: 0.3 });
-  const pointLayer = L.layerGroup().addTo(map);
-  const routeLayer = L.layerGroup().addTo(map);
-  const AMBA = [[-34.95, -58.85], [-34.35, -58.2]];
-  map.fitBounds(AMBA);
+  const map = new maplibregl.Map({
+    container: 'map', style: STYLE, center: [-58.6, -34.45], zoom: 10, attributionControl: false, pitchWithRotate: false,
+  });
+  map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: '© colaboradores de OpenStreetMap (ODbL)' }), 'bottom-right');
+  // Si el mapa vectorial no carga, usar las teselas clásicas de OpenStreetMap
+  const RASTER = { version: 8, sources: { osm: { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 19 } },
+    layers: [{ id: 'osm', type: 'raster', source: 'osm' }] };
+  let fellBack = false;
+  let styleOk = false;
+  map.on('style.load', () => { styleOk = true; });
+  const fallback = () => { if (fellBack || styleOk) return; fellBack = true; map.setStyle(RASTER); };
+  map.on('error', () => { if (!styleOk) fallback(); });
+  setTimeout(fallback, 10000);
+  const ready = new Promise(res => { if (map.loaded()) res(); else map.once('load', res); });
+  const EMPTY = { type: 'FeatureCollection', features: [] };
 
-  // ---------- Datos ----------
-  let rows = [];
-  let OWN = [];
-  const active = new Set(Object.keys(TYPES));
-  const norm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-  let visible = [];
+  // Capas propias: se agregan cada vez que se carga un estilo (también si se cambia al mapa de respaldo)
+  let handlersOn = false;
+  function addLayers() {
+    if (map.getSource('route')) return;
+    map.addSource('avoid', { type: 'geojson', data: EMPTY });
+    map.addLayer({ id: 'avoid', type: 'circle', source: 'avoid', paint: { 'circle-radius': 9, 'circle-color': cssVar('--warn'), 'circle-stroke-color': '#fff', 'circle-stroke-width': 3 } });
+    map.addSource('route', { type: 'geojson', data: EMPTY });
+    map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 12 } });
+    map.addLayer({ id: 'route', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': cssVar('--route'), 'line-width': 7 } });
+    map.addSource('restr', { type: 'geojson', data: EMPTY });
+    map.addLayer({ id: 'restr', type: 'circle', source: 'restr', paint: {
+      'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 3, 14, 7, 18, 10],
+      'circle-color': ['get', 'c'], 'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5 } });
+    if (route) map.getSource('route').setData({ type: 'Feature', geometry: route.geo, properties: {} });
+    drawAvoids(); refreshRestr();
+    if (handlersOn) return; handlersOn = true;
+    map.on('click', 'restr', e => { e.preventDefault(); const r = rows[e.features[0].properties.i]; restrPopup(r); });
+    map.on('click', 'route', e => { if (mode !== 'preview') return; e.preventDefault(); avoidPopup(e.lngLat); });
+    for (const l of ['restr', 'route']) {
+      map.on('mouseenter', l, () => { map.getCanvas().style.cursor = 'pointer'; });
+      map.on('mouseleave', l, () => { map.getCanvas().style.cursor = ''; });
+    }
+  }
+  map.on('style.load', addLayers);
+  ready.then(addLayers);
 
-  async function loadData() {
-    const [d, own] = await Promise.all([
-      fetch('data/restricciones.json').then(r => r.json()),
-      fetch('data/propias.json').then(r => r.json()).catch(() => []),
-    ]);
-    rows = d.rows.map(([id, et, pi, loc, street, t, raw, lat, lon, segs]) => {
-      const num = parseVal(t, raw);
-      const dubious = (t in RANGE) && (!Number.isFinite(num) || num < RANGE[t][0] || num > RANGE[t][1]);
-      return { id, et: et === 'w' ? 'way' : 'node', prov: d.provs[pi], loc, street, t, raw, num, lat, lon, segs, dubious };
-    });
-    OWN = own;
-    const counts = {};
-    rows.forEach(r => { counts[r.t] = (counts[r.t] || 0) + 1; });
-    for (const [k, T] of Object.entries(TYPES)) {
-      if (!counts[k]) { active.delete(k); continue; }
-      const lab = document.createElement('label');
-      lab.className = 'chip'; lab.style.setProperty('--c', `var(${T.color})`);
-      lab.innerHTML = `<input type="checkbox" checked><span class="dot"></span>${T.name} <small>${counts[k]}</small>`;
-      lab.querySelector('input').addEventListener('change', e => { e.target.checked ? active.add(k) : active.delete(k); render(); });
-      $('chips').appendChild(lab);
-    }
-    d.provs.forEach(p => { const o = document.createElement('option'); o.value = p; o.textContent = p; $('f-prov').appendChild(o); });
-    $('own-n').textContent = OWN.length;
-    for (const o of OWN) {
-      const a = document.createElement('article');
-      a.innerHTML = `<div class="t">${esc(o.lugar)}</div><div class="m">${esc([o.tipo, o.limite].filter(Boolean).join(' · '))}${o.horario ? ' · ' + esc(o.horario) : ''}</div><div class="m">${esc([o.loc, o.prov].filter(Boolean).join(', '))} · ${esc(o.estado)}</div>`;
-      $('own').appendChild(a);
-    }
-    render();
+  function restrPopup(r) {
+    new maplibregl.Popup({ maxWidth: '300px' }).setLngLat([r.lon, r.lat]).setHTML(`<div class="pop">${signHTML(r)}<div>
+      <h3>${esc(r.street)}</h3><p><b>${vlabel(r)}</b> · ${describe(r)}</p>
+      <p class="m">${esc([r.loc, r.prov].filter(Boolean).join(', '))}</p>
+      <p class="m"><a href="https://www.openstreetmap.org/${r.et}/${r.id}" target="_blank" rel="noopener">Ver en OpenStreetMap</a></p></div></div>`).addTo(map);
   }
 
-  function render() {
-    const only = $('f-only').checked, prov = $('f-prov').value, q = norm($('f-q').value.trim());
-    let aff = 0; visible = [];
-    pointLayer.clearLayers();
-    for (const r of rows) {
+  // Restricciones visibles: en vista previa / navegación, las que tocan la ruta; si se pide, todas las que afectan.
+  function refreshRestr() {
+    if (!map.getSource('restr')) return;
+    const all = store.get('showAll', false);
+    const nearIds = new Set((route && route.near || []).map(n => n.r));
+    const feats = [];
+    rows.forEach((r, i) => {
       r.v = verdict(r);
-      if (r.v === 'no' || r.v === 'warn') aff++;
-      if (!active.has(r.t)) continue;
-      if (only && !(r.v === 'no' || r.v === 'warn')) continue;
-      if (prov && r.prov !== prov) continue;
-      if (q && !norm(r.street + ' ' + r.loc).includes(q)) continue;
-      visible.push(r);
-      const col = (r.v === 'ok' || r.v === 'dud') ? css('--t-ok') : css(TYPES[r.t].color);
-      L.circleMarker([r.lat, r.lon], { renderer, radius: r.v === 'no' ? 6 : 4.5, color: '#fff', weight: 1.5, fillColor: col, fillOpacity: .95 })
-        .on('click', ev => { L.DomEvent.stopPropagation(ev); openPop(r); }).addTo(pointLayer);
+      const affects = r.v === 'no' || r.v === 'warn';
+      if (!affects) return;
+      if (!all && !nearIds.has(r)) return;
+      feats.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [r.lon, r.lat] }, properties: { i, c: cssVar(TYPES[r.t].color) } });
+    });
+    map.getSource('restr').setData({ type: 'FeatureCollection', features: feats });
+  }
+
+  // ---------- Pantallas ----------
+  let mode = 'home';
+  function setMode(m) {
+    mode = m; document.body.dataset.mode = m;
+    for (const v of ['home', 'results', 'preview', 'loading']) $('v-' + v).hidden = v !== m;
+    const nav = m === 'nav';
+    $('turn').hidden = !nav; $('navbar').hidden = !nav;
+    if (!nav) { $('alert').hidden = true; map.easeTo({ pitch: 0, bearing: 0, duration: 400 }); }
+    if (m === 'home') renderFavs();
+  }
+  document.querySelectorAll('[data-back]').forEach(b => b.addEventListener('click', () => { clearRoute(); setMode('home'); }));
+  function showErr(msg) { $('err').textContent = msg || ''; $('err').hidden = !msg; }
+
+  // ---------- Camión elegido ----------
+  function renderTruckChip() {
+    const T = truck();
+    $('truck-name').textContent = T ? `${T.name} · ${fmt(T.h)} m` : 'Elegí un camión';
+  }
+  $('b-truck').addEventListener('click', () => {
+    const box = $('pt-list'); box.textContent = '';
+    for (const T of trucks) {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'item';
+      b.innerHTML = `<span class="ico">${T.id === truckId ? '✔' : ''}</span><span><span class="t">${esc(T.name)}</span><br><span class="m">${fmt(T.h)} m alto · ${fmt(T.w)} t · ${fmt(T.l)} m largo${T.hz ? ' · carga peligrosa' : ''}</span></span><span></span>`;
+      b.addEventListener('click', () => { truckId = T.id; store.set('truckId', truckId); renderTruckChip(); refreshRestr(); $('pick-truck').close(); if (route && mode === 'preview') makeRoute(route.from, route.to); });
+      box.appendChild(b);
     }
-    $('n-aff').textContent = aff.toLocaleString('es-AR');
-    $('n-txt').textContent = `de ${rows.length.toLocaleString('es-AR')} restricciones afectan a tu camión`;
-    renderList();
-  }
+    $('pick-truck').showModal();
+  });
 
-  function openPop(r) {
-    L.popup({ maxWidth: 320 }).setLatLng([r.lat, r.lon]).setContent(`<div class="pop">${signHTML(r)}<div>
-      <h3>${esc(r.street)}</h3>
-      <p><span class="verdict ${VCLS[r.v]}">${vlabel(r)}</span>${describe(r)}</p>
-      <p class="m">${esc([r.loc, r.prov].filter(Boolean).join(', '))}${r.segs > 1 ? ` · ${r.segs} tramos` : ''}</p>
-      <p class="m"><a href="https://www.openstreetmap.org/${r.et}/${r.id}" target="_blank" rel="noopener">Ver en OpenStreetMap</a> · ${TYPES[r.t].key}=${esc(r.raw)}</p>
-    </div></div>`).openOn(map);
+  // ---------- GPS ----------
+  let me = null, meMarker = null, watchId = null, lastFix = null;
+  function meEl() {
+    const d = document.createElement('div'); d.className = 'me';
+    d.innerHTML = '<svg viewBox="0 0 34 34"><circle cx="17" cy="17" r="15" fill="#1f6feb" stroke="#fff" stroke-width="3"/><path d="M17 7 24 24 17 20 10 24Z" fill="#fff"/></svg>';
+    return d;
   }
-
-  const ORDER = { no: 0, warn: 1, dud: 2, ok: 3 }, TORD = 'PHADWLE';
-  const LIMIT = () => matchMedia('(max-width: 760px)').matches ? 20 : 60;
-  function renderList() {
-    const b = map.getBounds();
-    const inView = visible.filter(r => b.contains([r.lat, r.lon]))
-      .sort((a, c) => ORDER[a.v] - ORDER[c.v] || TORD.indexOf(a.t) - TORD.indexOf(c.t) || c.segs - a.segs || a.street.localeCompare(c.street));
-    const box = $('list'); box.textContent = '';
-    for (const r of inView.slice(0, LIMIT())) {
-      const it = document.createElement('button');
-      it.type = 'button'; it.className = 'item';
-      it.innerHTML = `${signHTML(r, true)}<div><div class="t">${esc(r.street)}</div><div class="m"><span class="verdict ${VCLS[r.v]}">${vlabel(r)}</span>${describe(r)} · ${esc(r.loc || r.prov)}</div></div>`;
-      it.addEventListener('click', () => { map.setView([r.lat, r.lon], Math.max(map.getZoom(), 15)); openPop(r); });
-      box.appendChild(it);
+  function onFix(pos) {
+    const c = pos.coords, now = Date.now();
+    let speed = Number.isFinite(c.speed) && c.speed !== null ? c.speed * 3.6 : null;
+    let heading = Number.isFinite(c.heading) && c.heading !== null ? c.heading : null;
+    if (lastFix) {
+      const d = dist([lastFix.lat, lastFix.lon], [c.latitude, c.longitude]), dt = (now - lastFix.at) / 1000;
+      if (speed === null && dt > 0.5 && dt < 30) speed = d / dt * 3.6;
+      if (heading === null && d > 8) heading = bearing([lastFix.lat, lastFix.lon], [c.latitude, c.longitude]);
     }
-    $('more').textContent = inView.length === 0 ? 'No hay restricciones en esta zona con los filtros actuales.'
-      : inView.length > LIMIT() ? `Mostrando ${LIMIT()} de ${inView.length.toLocaleString('es-AR')}. Acercá el mapa para ver el resto.` : `${inView.length} en esta zona.`;
+    me = { lat: c.latitude, lon: c.longitude, speed: speed || 0, heading: heading ?? (me && me.heading) ?? 0, at: now };
+    lastFix = { lat: me.lat, lon: me.lon, at: now };
+    if (!meMarker) meMarker = new maplibregl.Marker({ element: meEl(), rotationAlignment: 'map', pitchAlignment: 'viewport' }).setLngLat([me.lon, me.lat]).addTo(map);
+    else meMarker.setLngLat([me.lon, me.lat]);
+    meMarker.setRotation(me.heading || 0);
+    if (mode === 'nav') navTick();
   }
-
-  // ---------- Pestañas ----------
-  const tabs = ['viaje', 'camion', 'mapa'];
-  function showTab(name) {
-    for (const t of tabs) { $('t-' + t).setAttribute('aria-selected', String(t === name)); $('p-' + t).hidden = t !== name; }
-    store.set('tab', name);
+  function startWatch() {
+    if (watchId != null || !('geolocation' in navigator)) return;
+    watchId = navigator.geolocation.watchPosition(onFix, err => { if (err.code === 1) showErr('El celular no dio permiso de ubicación. Activalo en la configuración del navegador.'); },
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
   }
-  tabs.forEach(t => $('t-' + t).addEventListener('click', () => showTab(t)));
-  showTab(store.get('tab', 'viaje'));
+  function getMe() {
+    if (me && Date.now() - me.at < 30000) return Promise.resolve(me);
+    return new Promise((ok, fail) => {
+      if (!('geolocation' in navigator)) return fail(new Error('Este celular no tiene GPS disponible.'));
+      navigator.geolocation.getCurrentPosition(p => { onFix(p); startWatch(); ok(me); },
+        e => fail(new Error(e.code === 1 ? 'El celular no dio permiso de ubicación. Activalo para armar la ruta.' : 'No pude saber dónde estás. Probá de nuevo al aire libre.')),
+        { enableHighAccuracy: true, timeout: 20000 });
+    });
+  }
+  $('b-locate').addEventListener('click', async () => {
+    try { const p = await getMe(); map.easeTo({ center: [p.lon, p.lat], zoom: 15 }); } catch (e) { showErr(e.message); }
+  });
 
-  // ---------- Búsqueda de direcciones ----------
-  const key = () => $('f-key').value.trim();
+  // ---------- Buscar destino ----------
   function needKey() {
     if (key()) return false;
-    showErr('Falta la clave de rutas. Cargala en "Mi camión" para buscar direcciones y armar rutas.');
-    showTab('camion'); $('f-key').focus();
+    showErr('Falta la clave de rutas. Tocá el menú ☰ (arriba a la izquierda) y pegala en "Clave de rutas".');
     return true;
   }
-  function showErr(msg) { const e = $('err'); e.textContent = msg; e.hidden = !msg; }
-
-  const places = { from: null, to: null };
-  const markers = { from: null, to: null };
-  function setPlace(which, p) {
-    places[which] = p;
-    $('q-' + which).value = p ? p.label : '';
-    if (markers[which]) { markers[which].remove(); markers[which] = null; }
-    if (p && !(which === 'from' && p.gps)) {
-      markers[which] = L.circleMarker([p.lat, p.lon], { radius: 9, color: '#fff', weight: 3, fillColor: which === 'to' ? css('--t-p') : css('--route'), fillOpacity: 1 })
-        .bindTooltip(which === 'to' ? 'Destino' : 'Salida').addTo(map);
-    }
-  }
-
   async function geocode(text) {
-    const c = map.getCenter();
+    const c = me ? { lat: me.lat, lng: me.lon } : map.getCenter();
     const u = `${ORS}/geocode/search?api_key=${encodeURIComponent(key())}&text=${encodeURIComponent(text)}&boundary.country=AR&size=6&focus.point.lat=${c.lat}&focus.point.lon=${c.lng}`;
     const res = await fetch(u);
-    if (!res.ok) throw new Error(res.status === 403 || res.status === 401 ? 'La clave de rutas no es válida.' : `El buscador respondió con error ${res.status}.`);
+    if (!res.ok) throw new Error(res.status === 401 || res.status === 403 ? 'La clave de rutas no es válida. Revisala en el menú ☰.' : 'El buscador no respondió. Probá de nuevo.');
     const d = await res.json();
     return d.features.map(f => ({ label: f.properties.label.replace(/, Argentina$/, ''), lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0] }));
   }
   async function reverse(lat, lon) {
     try {
-      const res = await fetch(`${ORS}/geocode/reverse?api_key=${encodeURIComponent(key())}&point.lat=${lat}&point.lon=${lon}&size=1&boundary.country=AR`);
-      const d = await res.json();
+      const d = await (await fetch(`${ORS}/geocode/reverse?api_key=${encodeURIComponent(key())}&point.lat=${lat}&point.lon=${lon}&size=1&boundary.country=AR`)).json();
       return d.features[0].properties.label.replace(/, Argentina$/, '');
-    } catch (e) { return `${lat.toFixed(5)}, ${lon.toFixed(5)}`; }
+    } catch (e) { return 'Punto en el mapa'; }
   }
-
-  function wireSearch(which) {
-    const inp = $('q-' + which), box = $('r-' + which);
-    inp.addEventListener('keydown', async e => {
-      if (e.key !== 'Enter') return;
-      e.preventDefault();
-      const text = inp.value.trim();
-      if (text.length < 3 || needKey()) return;
-      box.hidden = false; box.innerHTML = '<button type="button" disabled>Buscando…</button>';
-      try {
-        const res = await geocode(text);
-        box.textContent = '';
-        if (!res.length) { box.innerHTML = '<button type="button" disabled>No encontré esa dirección. Probá con calle, número y ciudad.</button>'; return; }
-        for (const p of res) {
-          const b = document.createElement('button'); b.type = 'button';
-          const [first, ...rest] = p.label.split(', ');
-          b.innerHTML = `${esc(first)}<small>${esc(rest.join(', '))}</small>`;
-          b.addEventListener('click', () => { setPlace(which, p); box.hidden = true; map.setView([p.lat, p.lon], 14); });
-          box.appendChild(b);
-        }
-      } catch (err) { box.hidden = true; showErr(err.message); }
-    });
-    inp.addEventListener('input', () => { if (places[which] && inp.value !== places[which].label) places[which] = null; });
-  }
-  wireSearch('from'); wireSearch('to');
-
-  // ---------- GPS ----------
-  let me = null, meMarker = null, watchId = null;
-  const meIcon = L.divIcon({ className: '', html: '<div class="me"></div>', iconSize: [18, 18], iconAnchor: [9, 9] });
-  function updateMe(pos) {
-    me = { lat: pos.coords.latitude, lon: pos.coords.longitude, acc: pos.coords.accuracy, speed: pos.coords.speed, at: Date.now() };
-    if (!meMarker) meMarker = L.marker([me.lat, me.lon], { icon: meIcon, interactive: false, zIndexOffset: 1000 }).addTo(map);
-    else meMarker.setLatLng([me.lat, me.lon]);
-    if (nav.on) navTick();
-  }
-  function startWatch() {
-    if (watchId != null || !('geolocation' in navigator)) return;
-    watchId = navigator.geolocation.watchPosition(updateMe, err => {
-      if (err.code === 1) showErr('El celular no dio permiso de ubicación. Habilitalo en la configuración del navegador.');
-    }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
-  }
-  function getOnce() {
-    if (me && Date.now() - me.at < 30000) { startWatch(); return Promise.resolve(me); }
-    return new Promise((ok, fail) => {
-      if (!('geolocation' in navigator)) return fail(new Error('Este dispositivo no tiene GPS disponible.'));
-      navigator.geolocation.getCurrentPosition(p => { updateMe(p); startWatch(); ok(me); },
-        e => fail(new Error(e.code === 1 ? 'El celular no dio permiso de ubicación.' : 'No pude obtener tu ubicación.')),
-        { enableHighAccuracy: true, timeout: 20000 });
-    });
-  }
-  $('b-gps').addEventListener('click', async () => {
-    showErr('');
-    try { const p = await getOnce(); setPlace('from', { label: 'Mi ubicación', lat: p.lat, lon: p.lon, gps: true }); map.setView([p.lat, p.lon], 15); }
-    catch (e) { showErr(e.message); }
+  $('f-search').addEventListener('submit', async e => {
+    e.preventDefault(); showErr('');
+    const text = $('q').value.trim();
+    if (text.length < 3 || needKey()) return;
+    $('q').blur();
+    setMode('loading'); $('loading-text').textContent = 'Buscando…';
+    try {
+      const res = await geocode(text);
+      const box = $('results'); box.textContent = '';
+      if (!res.length) { setMode('home'); showErr('No encontré ese lugar. Probá con calle, número y ciudad.'); return; }
+      for (const p of res) {
+        const [first, ...rest] = p.label.split(', ');
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'item';
+        b.innerHTML = `<span class="ico">📍</span><span><span class="t">${esc(first)}</span><br><span class="m">${esc(rest.join(', '))}</span></span><span></span>`;
+        b.addEventListener('click', () => goTo(p));
+        box.appendChild(b);
+      }
+      setMode('results');
+    } catch (err) { setMode('home'); showErr(err.message); }
   });
 
-  // Tocar el mapa para elegir destino (en la pestaña Viaje)
-  map.on('click', async e => {
-    if ($('p-viaje').hidden || nav.on) return;
-    const { lat, lng } = e.latlng;
-    const html = document.createElement('div');
-    html.innerHTML = `<p style="margin:0 0 6px">¿Ir hasta acá?</p><div class="btns"><button type="button" class="primary">Elegir como destino</button><button type="button">Salir desde acá</button></div>`;
-    const [bTo, bFrom] = html.querySelectorAll('button');
-    const pop = L.popup().setLatLng(e.latlng).setContent(html).openOn(map);
-    const pick = async which => { map.closePopup(pop); setPlace(which, { label: 'Punto en el mapa', lat, lon: lng }); if (key()) setPlace(which, { label: await reverse(lat, lng), lat, lon: lng }); };
-    bTo.addEventListener('click', () => pick('to'));
-    bFrom.addEventListener('click', () => pick('from'));
-  });
-
-  // ---------- Ruta para camión ----------
-  let route = null;
-  function avoidPolygons() {
-    // Filas propias con coordenadas: cuadrado de ~60 m a esquivar.
-    const polys = OWN.filter(o => Number.isFinite(+o.lat) && Number.isFinite(+o.lon) && o.lat !== '' && /prohib|altura|peso|peligros/i.test(o.tipo || '')).map(o => {
-      const d = 0.0003, la = +o.lat, lo = +o.lon;
-      return [[[lo - d, la - d], [lo + d, la - d], [lo + d, la + d], [lo - d, la + d], [lo - d, la - d]]];
-    });
-    return polys.length ? { type: 'MultiPolygon', coordinates: polys } : null;
-  }
-
-  async function requestRoute(from, to) {
-    const body = {
-      coordinates: [[from.lon, from.lat], [to.lon, to.lat]],
-      language: 'es', instructions: true, units: 'm',
-      options: { vehicle_type: 'hgv', profile_params: { restrictions: {
-        height: truck.h, weight: truck.w, length: truck.l, width: truck.wd, axleload: truck.e, hazmat: !!truck.hz } } },
-    };
-    const av = avoidPolygons(); if (av) body.options.avoid_polygons = av;
-    const res = await fetch(`${ORS}/v2/directions/driving-hgv/geojson`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: key() }, body: JSON.stringify(body),
-    });
-    const d = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const code = d.error && d.error.code;
-      if (res.status === 401 || res.status === 403) throw new Error('La clave de rutas no es válida.');
-      if (code === 2010) throw new Error('El punto de salida o de llegada está lejos de una calle por donde pueda ir un camión. Elegí un punto sobre una calle.');
-      if (code === 2009 || code === 2099) throw new Error('No encontré una ruta posible para tu camión con esas medidas.');
-      if (res.status === 429) throw new Error('Se alcanzó el límite diario de rutas gratis. Probá de nuevo mañana.');
-      throw new Error((d.error && d.error.message) || `El servicio de rutas respondió con error ${res.status}.`);
+  function renderFavs() {
+    const box = $('favs'); box.textContent = '';
+    for (const [i, f] of favs.entries()) {
+      const b = document.createElement('div'); b.className = 'item'; b.setAttribute('role', 'button'); b.tabIndex = 0;
+      b.innerHTML = `<span class="ico">★</span><span><span class="t">${esc(f.label.split(', ')[0])}</span><br><span class="m">${esc(f.label.split(', ').slice(1).join(', '))}</span></span><button type="button" class="x" aria-label="Borrar">✕</button>`;
+      b.addEventListener('click', ev => { if (ev.target.closest('.x')) { favs.splice(i, 1); store.set('favs', favs); renderFavs(); return; } goTo(f); });
+      b.addEventListener('keydown', ev => { if (ev.key === 'Enter') goTo(f); });
+      box.appendChild(b);
     }
-    const f = d.features[0];
-    const coords = f.geometry.coordinates.map(([lo, la]) => [la, lo]);
-    const steps = f.properties.segments.flatMap(s => s.steps);
-    const cum = [0];
-    for (let i = 1; i < coords.length; i++) cum.push(cum[i - 1] + dist(coords[i - 1], coords[i]));
-    return { coords, steps, cum, summary: f.properties.summary, to };
   }
 
-  function dist(a, b) { // metros, aproximación equirectangular (suficiente para tramos cortos)
-    const R = 6371000, toR = Math.PI / 180, x = (b[1] - a[1]) * toR * Math.cos((a[0] + b[0]) / 2 * toR), y = (b[0] - a[0]) * toR;
+  // Tocar el mapa para elegir destino
+  map.on('click', e => {
+    if (e.defaultPrevented || (mode !== 'home' && mode !== 'results')) return;
+    const div = document.createElement('div');
+    div.innerHTML = '<div class="pop-actions"><button type="button" class="big go">Ir acá</button></div>';
+    const pop = new maplibregl.Popup({ closeButton: true }).setLngLat(e.lngLat).setDOMContent(div).addTo(map);
+    div.querySelector('button').addEventListener('click', async () => {
+      pop.remove();
+      if (needKey()) return;
+      goTo({ label: await reverse(e.lngLat.lat, e.lngLat.lng), lat: e.lngLat.lat, lon: e.lngLat.lng });
+    });
+  });
+
+  // ---------- Ruta ----------
+  let route = null, destMarker = null;
+  function dist(a, b) {
+    const R = 6371000, r = Math.PI / 180, x = (b[1] - a[1]) * r * Math.cos((a[0] + b[0]) / 2 * r), y = (b[0] - a[0]) * r;
     return Math.sqrt(x * x + y * y) * R;
   }
-  function distToSeg(p, a, b) { // metros desde p al segmento ab, y fracción t
-    const toR = Math.PI / 180, k = Math.cos(p[0] * toR) * 111320, m = 110540;
+  function bearing(a, b) {
+    const r = Math.PI / 180, y = Math.sin((b[1] - a[1]) * r) * Math.cos(b[0] * r);
+    const x = Math.cos(a[0] * r) * Math.sin(b[0] * r) - Math.sin(a[0] * r) * Math.cos(b[0] * r) * Math.cos((b[1] - a[1]) * r);
+    return (Math.atan2(y, x) / r + 360) % 360;
+  }
+  function distToSeg(p, a, b) {
+    const k = Math.cos(p[0] * Math.PI / 180) * 111320, m = 110540;
     const ax = (a[1] - p[1]) * k, ay = (a[0] - p[0]) * m, bx = (b[1] - p[1]) * k, by = (b[0] - p[0]) * m;
     const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy;
     let t = L2 ? -(ax * dx + ay * dy) / L2 : 0; t = Math.max(0, Math.min(1, t));
@@ -334,169 +300,404 @@
     return { d: Math.sqrt(x * x + y * y), t };
   }
 
+  function avoidPoints() {
+    const own = (window.__OWN || []).filter(o => o.lat !== '' && o.lat != null && Number.isFinite(+o.lat) && Number.isFinite(+o.lon));
+    return avoids.concat(own.map(o => ({ lat: +o.lat, lon: +o.lon })));
+  }
+  function polygonsFor(pts) {
+    if (!pts.length) return null;
+    return { type: 'MultiPolygon', coordinates: pts.map(({ lat, lon }) => {
+      const dy = 0.00035, dx = 0.00035 / Math.cos(lat * Math.PI / 180);
+      return [[[lon - dx, lat - dy], [lon + dx, lat - dy], [lon + dx, lat + dy], [lon - dx, lat + dy], [lon - dx, lat - dy]]];
+    }) };
+  }
+
+  // Indicaciones en criollo, armadas a partir del tipo de maniobra
+  const MANEUVER = {
+    0: 'Doblá a la izquierda', 1: 'Doblá a la derecha', 2: 'Doblá cerrado a la izquierda', 3: 'Doblá cerrado a la derecha',
+    4: 'Tomá levemente a la izquierda', 5: 'Tomá levemente a la derecha', 6: 'Seguí derecho', 7: 'En la rotonda', 8: 'Salí de la rotonda',
+    9: 'Pegá la vuelta', 10: 'Llegaste a destino', 11: 'Arrancá', 12: 'Mantenete a la izquierda', 13: 'Mantenete a la derecha',
+  };
+  function say(step) {
+    const n = step.name && step.name !== '-' ? step.name.split(',')[0] : '';
+    if (step.type === 7) return `En la rotonda, tomá la ${step.exit_number || ''}ª salida${n ? ' hacia ' + n : ''}`.replace(' ª', '');
+    if (step.type === 10) return 'Llegaste a destino';
+    if (step.type === 11) return n ? `Arrancá por ${n}` : 'Arrancá';
+    return MANEUVER[step.type] ? `${MANEUVER[step.type]}${n ? (step.type === 6 ? ' por ' : ' en ') + n : ''}` : step.instruction;
+  }
+  function arrowSVG(type) {
+    const rot = { 0: -90, 1: 90, 2: -135, 3: 135, 4: -40, 5: 40, 6: 0, 12: -20, 13: 20, 9: 180 }[type];
+    if (type === 7 || type === 8) return '<svg viewBox="0 0 72 72"><circle cx="36" cy="40" r="14" fill="none" stroke="#fff" stroke-width="7"/><path d="M36 26V6M26 16l10-10 10 10" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    if (type === 10) return '<svg viewBox="0 0 72 72"><path d="M20 64V8M20 10h34l-8 12 8 12H20" fill="none" stroke="#fff" stroke-width="6" stroke-linejoin="round" stroke-linecap="round"/></svg>';
+    return `<svg viewBox="0 0 72 72"><g transform="rotate(${rot || 0} 36 36)"><path d="M36 64V14M18 30l18-18 18 18" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></g></svg>`;
+  }
+
+  // Pide un tramo al servicio de rutas. Devuelve coords [lat, lon], pasos, distancia y tiempo.
+  async function rawRoute(from, to, pts) {
+    const T = truck();
+    const body = {
+      coordinates: [[from.lon, from.lat], [to.lon, to.lat]], language: 'es', instructions: true, units: 'm', radiuses: [2000, 2000],
+      options: { vehicle_type: 'hgv', profile_params: { restrictions: { height: T.h, weight: T.w, length: T.l, width: T.wd, axleload: T.e, hazmat: !!T.hz } } },
+    };
+    const av = polygonsFor(pts || []); if (av) body.options.avoid_polygons = av;
+    const res = await fetch(`${ORS}/v2/directions/driving-hgv/geojson`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: key() }, body: JSON.stringify(body) });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const code = d.error && d.error.code;
+      const e = new Error('El servicio de rutas no respondió. Probá de nuevo en un rato.'); e.code = code;
+      if (res.status === 401 || res.status === 403) e.message = 'La clave de rutas no es válida. Revisala en el menú ☰.';
+      else if (code === 2004) e.message = 'too-long';
+      else if (code === 2010) e.message = 'No hay una calle para camión cerca del punto de salida o de llegada.';
+      else if (code === 2009 || code === 2099) e.message = 'No encontré una ruta posible para este camión. Probá con otro destino o revisá las calles evitadas.';
+      else if (res.status === 429) e.message = 'Se alcanzó el límite de rutas gratis de hoy. Probá de nuevo mañana.';
+      throw e;
+    }
+    const f = d.features[0];
+    return { coords: f.geometry.coordinates.map(([lo, la]) => [la, lo]), steps: f.properties.segments.flatMap(s => s.steps),
+      dist: f.properties.summary.distance || 0, dur: f.properties.summary.duration || 0 };
+  }
+  const cumOf = coords => { const c = [0]; for (let i = 1; i < coords.length; i++) c.push(c[i - 1] + dist(coords[i - 1], coords[i])); return c; };
+
+  // Une tramos: el servicio gratis solo esquiva calles en rutas de hasta 150 km,
+  // así que en viajes largos se esquiva en una ventana alrededor de cada punto y el resto usa la ruta normal.
+  function slice(base, i0, i1) {
+    const coords = base.coords.slice(i0, i1 + 1);
+    const steps = base.steps.filter(s => s.way_points[0] >= i0 && s.way_points[0] < i1)
+      .map(s => ({ ...s, way_points: [s.way_points[0] - i0, Math.min(s.way_points[1], i1) - i0] }));
+    const dur = steps.reduce((a, s) => a + (s.duration || 0), 0);
+    return { coords, steps, dist: base.cum[i1] - base.cum[i0], dur };
+  }
+  function join(pieces) {
+    const coords = [], steps = []; let dist0 = 0, dur = 0;
+    pieces.forEach((p, k) => {
+      const off = coords.length ? coords.length - 1 : 0;
+      coords.push(...(coords.length ? p.coords.slice(1) : p.coords));
+      for (const s of p.steps) {
+        if (s.type === 11 && k > 0) continue;
+        if (s.type === 10 && k < pieces.length - 1) continue;
+        steps.push({ ...s, way_points: [s.way_points[0] + off, s.way_points[1] + off] });
+      }
+      dist0 += p.dist; dur += p.dur;
+    });
+    return { coords, steps, dist: dist0, dur };
+  }
+  async function stitched(from, to, pts) {
+    const base = await rawRoute(from, to, null);
+    base.cum = cumOf(base.coords);
+    const W = 25000, total = base.cum[base.cum.length - 1];
+    const wins = [];
+    for (const q of pts) {
+      let best = Infinity, bi = 0;
+      for (let i = 0; i < base.coords.length; i += 1) { const d = dist(base.coords[i], [q.lat, q.lon]); if (d < best) { best = d; bi = i; } }
+      if (best > 3000) continue;              // lejos de esta ruta: no molesta
+      wins.push([Math.max(0, base.cum[bi] - W), Math.min(total, base.cum[bi] + W)]);
+    }
+    if (!wins.length) return base;
+    wins.sort((a, b) => a[0] - b[0]);
+    const merged = [wins[0]];
+    for (const w of wins.slice(1)) { const m = merged[merged.length - 1]; if (w[0] <= m[1] && w[1] - m[0] < 140000) m[1] = Math.max(m[1], w[1]); else merged.push(w); }
+    const idxAt = m => { let i = 0; while (i < base.cum.length - 1 && base.cum[i] < m) i++; return i; };
+    const pieces = []; let cur = 0;
+    for (const [a, b] of merged) {
+      const i0 = idxAt(a), i1 = idxAt(b);
+      if (i0 > cur) pieces.push(slice(base, cur, i0));
+      const pFrom = i0 === 0 ? from : { lat: base.coords[i0][0], lon: base.coords[i0][1] };
+      const pTo = i1 >= base.coords.length - 1 ? to : { lat: base.coords[i1][0], lon: base.coords[i1][1] };
+      pieces.push(await rawRoute(pFrom, pTo, pts));
+      cur = i1;
+    }
+    if (cur < base.coords.length - 1) pieces.push(slice(base, cur, base.coords.length - 1));
+    return join(pieces);
+  }
+
+  async function requestRoute(from, to) {
+    const pts = avoidPoints();
+    let r;
+    try { r = await rawRoute(from, to, pts); }
+    catch (e) { if (e.message !== 'too-long') throw e; r = await stitched(from, to, pts); }
+    const cum = cumOf(r.coords);
+    const steps = r.steps.map(s => ({ ...s, text: say(s) }));
+    const rt = { from, to, coords: r.coords, cum, steps, total: cum[cum.length - 1], time: r.dur,
+      geo: { type: 'LineString', coordinates: r.coords.map(([la, lo]) => [lo, la]) } };
+    rt.near = nearRoute(rt, 25);
+    return rt;
+  }
+
   function nearRoute(rt, maxM) {
-    let minLa = 90, maxLa = -90, minLo = 180, maxLo = -180;
-    for (const [la, lo] of rt.coords) { minLa = Math.min(minLa, la); maxLa = Math.max(maxLa, la); minLo = Math.min(minLo, lo); maxLo = Math.max(maxLo, lo); }
-    const pad = 0.002, out = [];
+    let a = 90, b = -90, c = 180, e = -180;
+    for (const [la, lo] of rt.coords) { a = Math.min(a, la); b = Math.max(b, la); c = Math.min(c, lo); e = Math.max(e, lo); }
+    const out = [];
     for (const r of rows) {
+      r.v = verdict(r);
       if (r.v !== 'no' && r.v !== 'warn') continue;
-      if (r.lat < minLa - pad || r.lat > maxLa + pad || r.lon < minLo - pad || r.lon > maxLo + pad) continue;
+      if (r.lat < a - .002 || r.lat > b + .002 || r.lon < c - .002 || r.lon > e + .002) continue;
       let best = Infinity, at = 0;
       for (let i = 1; i < rt.coords.length; i++) {
         const s = distToSeg([r.lat, r.lon], rt.coords[i - 1], rt.coords[i]);
         if (s.d < best) { best = s.d; at = rt.cum[i - 1] + s.t * (rt.cum[i] - rt.cum[i - 1]); }
       }
-      if (best <= maxM) out.push({ r, d: best, at });
+      if (best <= maxM) out.push({ r, at });
     }
-    return out.sort((a, b) => a.at - b.at);
+    return out.sort((x, y) => x.at - y.at);
   }
-
-  const km = m => m >= 1000 ? `${fmt((m / 1000).toFixed(m >= 10000 ? 0 : 1))} km` : `${Math.round(m / 10) * 10} m`;
-  const hm = s => { const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60); return h ? `${h} h ${m} min` : `${m} min`; };
 
   function drawRoute(rt) {
-    routeLayer.clearLayers();
-    L.polyline(rt.coords, { color: '#fff', weight: 9, opacity: .9, interactive: false }).addTo(routeLayer);
-    L.polyline(rt.coords, { color: css('--route'), weight: 5, opacity: 1, interactive: false }).addTo(routeLayer);
+    ready.then(() => { const src = map.getSource('route'); if (src) src.setData(rt ? { type: 'Feature', geometry: rt.geo, properties: {} } : EMPTY); });
+    if (destMarker) { destMarker.remove(); destMarker = null; }
+    if (rt) { const el = document.createElement('div'); el.className = 'pin'; destMarker = new maplibregl.Marker({ element: el }).setLngLat([rt.to.lon, rt.to.lat]).addTo(map); }
+    refreshRestr();
   }
+  function clearRoute() { route = null; drawRoute(null); }
 
-  function showRoute(rt) {
-    route = rt;
-    drawRoute(rt);
-    $('route-out').hidden = false;
-    $('summary').innerHTML = `<div><b>${km(rt.summary.distance)}</b></div><div><b>${hm(rt.summary.duration)}</b></div><span>Ruta para camión de ${fmt(truck.h)} m, ${fmt(truck.w)} t y ${fmt(truck.l)} m${truck.hz ? ', con carga peligrosa' : ''}.</span>`;
-    const near = nearRoute(rt, 25);
-    rt.near = near;
-    const w = $('warns'); w.textContent = '';
-    if (!near.length) w.innerHTML = '<p class="ok">No encontré restricciones de la base sobre este recorrido.</p>';
-    else {
-      const h = document.createElement('p'); h.className = 'hint';
-      h.textContent = `Revisá ${near.length === 1 ? 'este punto' : `estos ${near.length} puntos`} cerca del recorrido (a menos de 25 m):`;
-      w.appendChild(h);
-      for (const n of near.slice(0, 15)) {
-        const b = document.createElement('button'); b.type = 'button'; b.className = 'warn';
-        b.innerHTML = `${signHTML(n.r, true)}<div><div class="t">${esc(n.r.street)}</div><div class="m"><span class="verdict ${VCLS[n.r.v]}">${vlabel(n.r)}</span>${describe(n.r)} · a ${km(n.at)} de la salida</div></div>`;
-        b.addEventListener('click', () => { map.setView([n.r.lat, n.r.lon], 17); openPop(n.r); });
-        w.appendChild(b);
-      }
-    }
-    const ol = $('steps'); ol.textContent = '';
-    for (const s of rt.steps) { const li = document.createElement('li'); li.innerHTML = `${esc(s.instruction)} <span>${s.distance ? km(s.distance) : ''}</span>`; ol.appendChild(li); }
-  }
-
-  $('f-route').addEventListener('submit', async e => {
-    e.preventDefault(); showErr('');
+  async function goTo(place) {
+    showErr('');
     if (needKey()) return;
-    const btn = $('b-route');
+    setMode('loading'); $('loading-text').textContent = 'Armando la ruta para tu camión…';
     try {
-      btn.disabled = true; btn.textContent = 'Armando ruta…';
-      let from = places.from;
-      if (!from) { const p = await getOnce(); from = { label: 'Mi ubicación', lat: p.lat, lon: p.lon, gps: true }; setPlace('from', from); }
-      if (!places.to) throw new Error('Elegí un destino: buscalo y tocá el resultado, o tocá el mapa.');
-      const rt = await requestRoute(from, places.to);
-      showRoute(rt);
-      map.fitBounds(L.latLngBounds(rt.coords).pad(0.1));
-    } catch (err) { showErr(err.message); }
-    finally { btn.disabled = false; btn.textContent = 'Armar ruta para mi camión'; }
+      const p = await getMe();
+      await makeRoute({ lat: p.lat, lon: p.lon }, place);
+    } catch (err) { setMode('home'); showErr(err.message); }
+  }
+  async function makeRoute(from, to) {
+    route = await requestRoute(from, to);
+    drawRoute(route);
+    $('dest-name').textContent = to.label;
+    $('p-km').textContent = km(route.total);
+    $('p-time').textContent = hm(route.time);
+    const n = route.near.length;
+    $('b-checks').hidden = !n;
+    $('b-checks').textContent = n ? `⚠ ${n === 1 ? '1 lugar' : n + ' lugares'} para mirar en el camino` : '';
+    $('checks').hidden = true;
+    const box = $('checks'); box.textContent = '';
+    for (const x of route.near.slice(0, 12)) {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'item';
+      b.innerHTML = `${signHTML(x.r)}<span><span class="t">${esc(x.r.street)}</span><br><span class="m">${vlabel(x.r)} · ${describe(x.r)} · a ${km(x.at)}</span></span><span></span>`;
+      b.addEventListener('click', () => { map.easeTo({ center: [x.r.lon, x.r.lat], zoom: 16 }); restrPopup(x.r); });
+      box.appendChild(b);
+    }
+    setMode('preview');
+    const lons = route.coords.map(c => c[1]), lats = route.coords.map(c => c[0]);
+    const desktop = matchMedia('(min-width: 820px)').matches;
+    map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]],
+      { padding: desktop ? { top: 80, bottom: 40, left: 460, right: 40 } : { top: 80, bottom: Math.round(innerHeight * 0.55), left: 30, right: 30 }, duration: 600 });
+  }
+  $('b-checks').addEventListener('click', () => { $('checks').hidden = !$('checks').hidden; });
+  $('b-fav').addEventListener('click', () => {
+    if (!route) return;
+    if (!favs.some(f => f.label === route.to.label)) { favs.unshift({ label: route.to.label, lat: route.to.lat, lon: route.to.lon }); store.set('favs', favs.slice(0, 12)); }
+    $('b-fav').textContent = '★ Guardado';
   });
-  $('b-clear').addEventListener('click', () => { route = null; routeLayer.clearLayers(); $('route-out').hidden = true; setPlace('to', null); });
+
+  // Evitar un punto de la ruta (vista previa)
+  function avoidPopup(lngLat) {
+    const div = document.createElement('div');
+    div.innerHTML = '<p style="margin:0 0 6px">¿Por acá no puede pasar un camión?</p><div class="pop-actions"><button type="button" class="big warn">Evitar y recalcular</button></div>';
+    const pop = new maplibregl.Popup().setLngLat(lngLat).setDOMContent(div).addTo(map);
+    div.querySelector('button').addEventListener('click', async () => {
+      pop.remove();
+      addAvoid(lngLat.lat, lngLat.lng, 'Marcado en la ruta');
+      setMode('loading'); $('loading-text').textContent = 'Buscando otro camino…';
+      try { await makeRoute(route.from, route.to); } catch (e) { setMode('preview'); showErr(e.message); }
+    });
+  }
+  function addAvoid(lat, lon, label) {
+    avoids.push({ lat: +lat.toFixed(6), lon: +lon.toFixed(6), label, at: new Date().toISOString().slice(0, 10) });
+    store.set('avoids', avoids); drawAvoids();
+  }
+  function drawAvoids() {
+    if (!map.getSource('avoid')) return;
+    map.getSource('avoid').setData({ type: 'FeatureCollection', features: avoids.map(a => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [a.lon, a.lat] }, properties: {} })) });
+  }
 
   // ---------- Navegación ----------
-  const nav = { on: false, idx: 0, spoken: {}, off: 0, lastReroute: 0, wake: null };
-  function say(text) {
-    try { if (!('speechSynthesis' in window)) return; const u = new SpeechSynthesisUtterance(text); u.lang = 'es-AR'; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) { /* sin voz */ }
+  const nav = { idx: 0, spoken: {}, off: 0, lastReroute: 0, wake: null, overSince: 0, lastSpeedWarn: 0, audio: null };
+  function speak(text) {
+    try { if (!('speechSynthesis' in window)) return; const u = new SpeechSynthesisUtterance(text); u.lang = 'es-AR'; u.rate = 1; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) { /* sin voz */ }
   }
-  async function startNav() {
-    if (!route) return;
-    try { await getOnce(); } catch (e) { showErr(e.message); return; }
-    nav.on = true; nav.idx = 0; nav.spoken = {}; nav.off = 0;
-    document.body.classList.add('navigating');
-    $('nav-banner').hidden = false;
-    setTimeout(() => map.invalidateSize(), 50);
-    requestWake();
-    say('Iniciando ruta para camión. ' + (route.steps[0] ? route.steps[0].instruction : ''));
-    navTick();
+  function beep() {
+    try {
+      const a = nav.audio || (nav.audio = new (window.AudioContext || window.webkitAudioContext)());
+      for (const [t, f] of [[0, 880], [0.25, 880], [0.5, 1100]]) {
+        const o = a.createOscillator(), g = a.createGain(); o.frequency.value = f; o.type = 'square';
+        g.gain.setValueAtTime(0.25, a.currentTime + t); g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + t + 0.2);
+        o.connect(g).connect(a.destination); o.start(a.currentTime + t); o.stop(a.currentTime + t + 0.2);
+      }
+    } catch (e) { /* sin sonido */ }
   }
-  function stopNav() {
-    nav.on = false; document.body.classList.remove('navigating'); $('nav-banner').hidden = true;
-    try { nav.wake && nav.wake.release(); } catch (e) { /* nada */ }
-    try { speechSynthesis.cancel(); } catch (e) { /* nada */ }
-    setTimeout(() => map.invalidateSize(), 50);
-  }
-  $('b-nav').addEventListener('click', startNav);
-  $('b-stop').addEventListener('click', stopNav);
-  // Mantener la pantalla prendida mientras se navega (sin esperar: algunos celulares no responden nunca)
   function requestWake() {
     try { navigator.wakeLock.request('screen').then(w => { nav.wake = w; w.addEventListener('release', () => { nav.wake = null; }); }).catch(() => {}); } catch (e) { /* sin soporte */ }
   }
-  document.addEventListener('visibilitychange', () => { if (nav.on && document.visibilityState === 'visible' && !nav.wake) requestWake(); });
+  document.addEventListener('visibilitychange', () => { if (mode === 'nav' && document.visibilityState === 'visible' && !nav.wake) requestWake(); });
 
-  async function navTick() {
-    if (!nav.on || !me || !route) return;
+  $('b-go').addEventListener('click', async () => {
+    if (!route) return;
+    try { await getMe(); } catch (e) { showErr(e.message); return; }
+    try { nav.audio = nav.audio || new (window.AudioContext || window.webkitAudioContext)(); nav.audio.resume(); } catch (e) { /* nada */ }
+    Object.assign(nav, { idx: 0, spoken: {}, off: 0, overSince: 0 });
+    setMode('nav'); requestWake(); startWatch();
+    speak('Vamos. ' + (route.steps[0] ? route.steps[0].text : ''));
+    navTick();
+  });
+  $('b-stop').addEventListener('click', () => {
+    try { nav.wake && nav.wake.release(); } catch (e) { /* nada */ }
+    try { speechSynthesis.cancel(); } catch (e) { /* nada */ }
+    clearRoute(); setMode('home');
+  });
+
+  // "No puedo pasar": evita la próxima maniobra y recalcula desde donde está el camión
+  $('b-cant').addEventListener('click', async () => {
+    if (!route || !me) return;
+    const done = route.cum[nav.idx] || 0;
+    let si = route.steps.findIndex(s => route.cum[s.way_points[0]] > done + 5);
+    const step = route.steps[si >= 0 ? si : route.steps.length - 1];
+    const toStep = route.cum[step.way_points[0]] - done;
+    // si la maniobra está lejos, evitar el tramo que tiene adelante (unos 60 m)
+    let p = route.coords[step.way_points[0]];
+    if (toStep > 300) { let i = nav.idx; while (i < route.coords.length - 1 && route.cum[i] - done < 60) i++; p = route.coords[i]; }
+    addAvoid(p[0], p[1], step.name && step.name !== '-' ? step.name : 'Calle sin nombre');
+    showAlert('Buscando otro camino…', 'orange');
+    speak('Entendido. Busco otro camino.');
+    await reroute(true);
+  });
+
+  async function reroute(force) {
+    if (!force && Date.now() - nav.lastReroute < 30000) return;
+    nav.lastReroute = Date.now();
+    try {
+      const rt = await requestRoute({ lat: me.lat, lon: me.lon }, route.to);
+      route = rt; drawRoute(rt);
+      Object.assign(nav, { idx: 0, spoken: {}, off: 0 });
+      hideAlert(); navTick();
+    } catch (e) { showAlert(e.message, 'orange'); }
+  }
+
+  let alertTimer;
+  function showAlert(text, cls) { const a = $('alert'); a.textContent = text; a.className = 'alert-banner' + (cls ? ' ' + cls : ''); a.hidden = false; clearTimeout(alertTimer); alertTimer = setTimeout(hideAlert, 6000); }
+  function hideAlert() { $('alert').hidden = true; }
+
+  function checkSpeed() {
+    const v = Math.round(me.speed || 0);
+    $('speed-n').textContent = v;
+    const over = v > speedLimit;
+    $('speed').classList.toggle('over', over);
+    if (!over) { nav.overSince = 0; return; }
+    if (!nav.overSince) nav.overSince = Date.now();
+    if (Date.now() - nav.overSince > 3000 && Date.now() - nav.lastSpeedWarn > 20000) {
+      nav.lastSpeedWarn = Date.now();
+      beep(); showAlert(`¡Bajá la velocidad! Máximo ${speedLimit} km/h`);
+      setTimeout(() => speak(`Bajá la velocidad. Vas a ${v}. El máximo es ${speedLimit}.`), 800);
+    }
+  }
+
+  function navTick() {
+    if (mode !== 'nav' || !me || !route) return;
+    checkSpeed();
     const p = [me.lat, me.lon], c = route.coords;
-    // buscar el punto más cercano del recorrido cerca de la última posición conocida
     let best = Infinity, bi = nav.idx, bt = 0;
-    const from = Math.max(1, nav.idx - 20), to = Math.min(c.length - 1, nav.idx + 400);
-    for (let i = from; i <= to; i++) { const s = distToSeg(p, c[i - 1], c[i]); if (s.d < best) { best = s.d; bi = i - 1; bt = s.t; } }
+    for (let i = Math.max(1, nav.idx - 20); i <= Math.min(c.length - 1, nav.idx + 400); i++) {
+      const s = distToSeg(p, c[i - 1], c[i]); if (s.d < best) { best = s.d; bi = i - 1; bt = s.t; }
+    }
     nav.idx = bi;
     const done = route.cum[bi] + bt * (route.cum[bi + 1] - route.cum[bi]);
-    const left = route.summary.distance - done;
-    map.setView(p, Math.max(map.getZoom(), 16), { animate: true });
+    const left = Math.max(0, route.total - done);
+    const head = (me.speed > 5 && me.heading) ? me.heading : bearing(c[bi], c[Math.min(c.length - 1, bi + 3)]);
+    map.easeTo({ center: [me.lon, me.lat], zoom: me.speed > 60 ? 15.5 : 16.5, bearing: head, pitch: 55, duration: 900, offset: [0, innerHeight * 0.18] });
 
-    // fuera de ruta: recalcular
+    $('eta-left').textContent = km(left);
+    $('eta-time').textContent = `Llegás ${clock(route.time * left / route.total)}`;
+
     if (best > 60) nav.off++; else nav.off = 0;
-    if (nav.off >= 3 && Date.now() - nav.lastReroute > 30000) {
-      nav.lastReroute = Date.now(); nav.off = 0;
-      say('Recalculando ruta.');
-      try { const rt = await requestRoute({ label: 'Mi ubicación', lat: me.lat, lon: me.lon, gps: true }, route.to); showRoute(rt); nav.idx = 0; nav.spoken = {}; }
-      catch (e) { $('nb-meta').textContent = e.message; }
+    if (nav.off >= 3) { nav.off = 0; showAlert('Recalculando…', 'orange'); speak('Recalculando.'); reroute(false); return; }
+
+    if (left < 30) {
+      $('turn-arrow').innerHTML = arrowSVG(10); $('turn-dist').textContent = ''; $('turn-text').textContent = 'Llegaste a destino';
+      if (!nav.spoken.end) { nav.spoken.end = 1; speak('Llegaste a destino.'); }
       return;
     }
-    if (left < 30) { $('nb-dist').textContent = '✓'; $('nb-text').textContent = 'Llegaste a destino'; $('nb-meta').textContent = ''; if (!nav.spoken.end) { nav.spoken.end = 1; say('Llegaste a destino.'); } return; }
-
-    // próxima maniobra: el primer paso cuyo comienzo esté por delante
     let si = route.steps.findIndex(s => s.way_points[0] > bi);
     if (si < 0) si = route.steps.length - 1;
     const step = route.steps[si];
     const toStep = Math.max(0, route.cum[step.way_points[0]] - done);
-    $('nb-dist').textContent = km(toStep);
-    $('nb-text').textContent = step.instruction;
-    const nextWarn = (route.near || []).find(n => n.at > done);
-    $('nb-meta').textContent = `Faltan ${km(left)}` + (nextWarn ? ` · Ojo en ${km(nextWarn.at - done)}: ${nextWarn.r.street} (${vlabel(nextWarn.r).toLowerCase()})` : '');
-    for (const [th, pre] of [[600, 'En 500 metros, '], [200, 'En 200 metros, '], [40, '']]) {
+    $('turn-arrow').innerHTML = arrowSVG(step.type);
+    $('turn-dist').textContent = km(toStep);
+    $('turn-text').textContent = step.text;
+    for (const [th, pre] of [[600, 'En 500 metros, '], [220, 'En 200 metros, '], [45, '']]) {
       const k = si + ':' + th;
-      if (toStep <= th && !nav.spoken[k]) { nav.spoken[k] = 1; say(pre + step.instruction); break; }
+      if (toStep <= th && !nav.spoken[k]) { nav.spoken[k] = 1; if (!(th === 600 && toStep < 220)) speak(pre + step.text.charAt(0).toLowerCase() + step.text.slice(1)); break; }
     }
-    if (nextWarn && nextWarn.at - done < 400 && !nav.spoken['w' + nextWarn.r.id + nextWarn.r.t]) {
-      nav.spoken['w' + nextWarn.r.id + nextWarn.r.t] = 1;
-      say(`Atención: adelante hay una restricción. ${describe(nextWarn.r).replace(/\(.*\)/, '')}.`);
+    const w = route.near.find(n => n.at > done && n.at - done < 400);
+    if (w && !nav.spoken['w' + w.r.id + w.r.t]) {
+      nav.spoken['w' + w.r.id + w.r.t] = 1;
+      showAlert(`Atención: ${describe(w.r)} en ${km(w.at - done)}`, 'orange');
+      setTimeout(() => speak(`Atención. Adelante: ${describe(w.r)}.`), 1500);
     }
   }
 
-  // ---------- Eventos de filtros y camión ----------
-  function saveTruck() {
-    for (const k in tin) { const v = parseFloat(String(tin[k].value).replace(',', '.')); if (Number.isFinite(v)) truck[k] = v; }
-    truck.hz = $('f-hz').checked;
-    store.set('truck', truck);
-    render();
+  // ---------- Ajustes ----------
+  function renderTrucks() {
+    const box = $('trucks'); box.textContent = '';
+    trucks.forEach((T, i) => {
+      const d = document.createElement('div'); d.className = 'tcard';
+      d.innerHTML = `<label class="name">Nombre o patente<input type="text" data-k="name" value="${esc(T.name)}"></label>
+        <label>Alto (m)<input type="number" inputmode="decimal" step="0.05" data-k="h" value="${T.h}"></label>
+        <label>Peso (t)<input type="number" inputmode="decimal" step="0.5" data-k="w" value="${T.w}"></label>
+        <label>Largo (m)<input type="number" inputmode="decimal" step="0.5" data-k="l" value="${T.l}"></label>
+        <label>Ancho (m)<input type="number" inputmode="decimal" step="0.05" data-k="wd" value="${T.wd}"></label>
+        <label>Por eje (t)<input type="number" inputmode="decimal" step="0.5" data-k="e" value="${T.e}"></label>
+        <label class="check"><input type="checkbox" data-k="hz" ${T.hz ? 'checked' : ''}> Carga peligrosa</label>
+        ${trucks.length > 1 ? '<button type="button" class="del">Borrar este camión</button>' : ''}`;
+      d.querySelectorAll('input').forEach(inp => inp.addEventListener('change', () => {
+        const k = inp.dataset.k;
+        T[k] = k === 'name' ? (inp.value.trim() || 'Camión') : k === 'hz' ? inp.checked : (parseFloat(String(inp.value).replace(',', '.')) || T[k]);
+        store.set('trucks', trucks); renderTruckChip(); refreshRestr();
+      }));
+      const del = d.querySelector('.del');
+      if (del) del.addEventListener('click', () => { trucks.splice(i, 1); if (!trucks.some(t => t.id === truckId)) truckId = trucks[0].id; store.set('trucks', trucks); store.set('truckId', truckId); renderTrucks(); renderTruckChip(); });
+      box.appendChild(d);
+    });
   }
-  for (const k in tin) tin[k].addEventListener('input', saveTruck);
-  $('f-hz').addEventListener('change', saveTruck);
-  $('f-key').addEventListener('change', () => { store.set('key', $('f-key').value.trim()); showErr(''); });
-  $('f-only').addEventListener('change', render);
-  $('f-prov').addEventListener('change', () => {
-    render();
-    const pts = visible.map(r => [r.lat, r.lon]);
-    if ($('f-prov').value && pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.15), { maxZoom: 13 });
+  $('b-add-truck').addEventListener('click', () => {
+    trucks.push({ id: 't' + Date.now(), name: 'Camión nuevo', h: 4, w: 40, l: 18, wd: 2.6, e: 10.5, hz: true });
+    store.set('trucks', trucks); renderTrucks();
   });
-  let qt; $('f-q').addEventListener('input', () => { clearTimeout(qt); qt = setTimeout(render, 200); });
-  map.on('moveend', renderList);
+  function renderAvoids() {
+    const box = $('avoids'); box.textContent = '';
+    if (!avoids.length) { box.innerHTML = '<p class="tip">Todavía no hay calles evitadas.</p>'; return; }
+    avoids.forEach((a, i) => {
+      const d = document.createElement('div'); d.className = 'item';
+      d.innerHTML = `<span class="ico">⛔</span><span><span class="t">${esc(a.label)}</span><br><span class="m">${a.at} · ${a.lat.toFixed(5)}, ${a.lon.toFixed(5)}</span></span><button type="button" class="x" aria-label="Borrar">✕</button>`;
+      d.querySelector('.x').addEventListener('click', () => { avoids.splice(i, 1); store.set('avoids', avoids); drawAvoids(); renderAvoids(); });
+      box.appendChild(d);
+    });
+  }
+  $('b-menu').addEventListener('click', () => {
+    renderTrucks(); renderAvoids();
+    $('s-speed').value = speedLimit; $('s-key').value = store.get('key', '') ? '••••••••' : ''; $('s-restr').checked = store.get('showAll', false);
+    $('settings').showModal();
+  });
+  $('s-speed').addEventListener('change', () => { const v = parseInt($('s-speed').value, 10); if (v >= 40 && v <= 130) { speedLimit = v; store.set('speedLimit', v); } });
+  $('s-key').addEventListener('change', () => { const v = $('s-key').value.trim(); if (v && !/^•+$/.test(v)) { store.set('key', v); showErr(''); } });
+  $('s-restr').addEventListener('change', () => { store.set('showAll', $('s-restr').checked); refreshRestr(); });
 
-  // ---------- Instalar como app ----------
+  // ---------- Instalar ----------
   let installEvt = null;
   window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('b-install').hidden = false; });
   $('b-install').addEventListener('click', async () => { if (!installEvt) return; installEvt.prompt(); await installEvt.userChoice; installEvt = null; $('b-install').hidden = true; });
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
-  loadData().catch(() => showErr('No pude cargar las restricciones. Revisá la conexión y recargá la página.'));
+  // ---------- Arranque ----------
+  renderTruckChip(); setMode('home');
+  Promise.all([
+    fetch('data/restricciones.json').then(r => r.json()),
+    fetch('data/propias.json').then(r => r.json()).catch(() => []),
+  ]).then(([d, own]) => {
+    window.__OWN = own;
+    rows = d.rows.map(([id, et, pi, loc, street, t, raw, lat, lon, segs]) => {
+      const num = parseVal(t, raw);
+      return { id, et: et === 'w' ? 'way' : 'node', prov: d.provs[pi], loc, street, t, raw, num, lat, lon, segs,
+        dubious: (t in RANGE) && (!Number.isFinite(num) || num < RANGE[t][0] || num > RANGE[t][1]) };
+    });
+    ready.then(refreshRestr);
+  }).catch(() => showErr('No pude cargar las restricciones. Revisá la conexión.'));
+  getMe().then(p => map.jumpTo({ center: [p.lon, p.lat], zoom: 14 })).catch(() => {});
 })();
