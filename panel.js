@@ -14,7 +14,7 @@
   const sb = N.sb;
 
   // ---------- Datos ----------
-  const D = { choferes: [], camiones: [], lugares: [], viajes: [], posiciones: [], alertas: [], bloqueos: [], ajustes: { velocidad_max: 80 } };
+  const D = { choferes: [], camiones: [], lugares: [], viajes: [], posiciones: [], alertas: [], bloqueos: [], rastreo: [], sitrack: null, ajustes: { velocidad_max: 80 } };
   const byId = (arr, id) => arr.find(x => x.id === id);
   const chofer = id => byId(D.choferes, id);
   const camion = id => byId(D.camiones, id);
@@ -35,7 +35,7 @@
 
   async function loadAll() {
     const desde = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
-    const [ch, ca, lu, vi, po, al, bl, aj] = await Promise.all([
+    const [ch, ca, lu, vi, po, al, bl, aj, ra, st] = await Promise.all([
       sb.from('perfiles').select('*').eq('rol', 'chofer').order('nombre'),
       sb.from('camiones').select('*').order('nombre'),
       sb.from('lugares').select('*').order('nombre'),
@@ -44,7 +44,11 @@
       sb.from('alertas').select('*').order('at', { ascending: false }).limit(60),
       sb.from('bloqueos').select('*').eq('activo', true).order('creado', { ascending: false }),
       sb.from('ajustes').select('*').eq('id', 1).maybeSingle(),
+      sb.from('rastreo').select('*'),
+      sb.from('sitrack_estado').select('*').eq('id', 1).maybeSingle(),
     ]);
+    if (!ra.error) D.rastreo = ra.data;          // si todavía no está la parte de Sitrack, se ignora
+    if (!st.error) D.sitrack = st.data;
     for (const [k, r] of Object.entries({ choferes: ch, camiones: ca, lugares: lu, viajes: vi, posiciones: po, alertas: al, bloqueos: bl })) {
       if (r.error) fail(r.error, 'No se pudo cargar ' + k); else D[k] = r.data;
     }
@@ -118,6 +122,36 @@
     new maplibregl.Popup({ offset: 10 }).setLngLat([p.lon, p.lat]).setHTML(`<b>${esc(L.who)}</b>${L.truck ? ' · ' + esc(L.truck) : ''}<br>${Math.round(p.velocidad || 0)} km/h · ${hace(p.at)}${d ? `<br>Va a ${esc(d.nombre)}` : ''}`).addTo(map);
   }
 
+  // Camiones con rastreador satelital (Sitrack): un marcador por patente
+  const satMarkers = new Map();
+  const satName = r => { const c = camion(r.camion_id); return c ? c.nombre : (r.nombre ? `${r.asset_id} (${r.nombre})` : r.asset_id); };
+  const satOver = r => r.velocidad != null && r.velocidad > D.ajustes.velocidad_max && Date.now() - new Date(r.reporte_at || r.actualizado).getTime() < 5 * 60 * 1000;
+  const satStale = r => Date.now() - new Date(r.reporte_at || r.actualizado).getTime() > 30 * 60 * 1000;
+  function drawSat() {
+    const seen = new Set();
+    for (const r of D.rastreo) {
+      if (r.lat == null || r.lon == null) continue;
+      seen.add(r.asset_id);
+      let m = satMarkers.get(r.asset_id);
+      if (!m) {
+        const el = document.createElement('div'); el.className = 'truck sat';
+        el.innerHTML = `<div class="dot">${TRUCK_SVG}</div><div class="lbl"></div>`;
+        el.addEventListener('click', ev => { ev.stopPropagation(); satPopup(r.asset_id); });
+        m = new maplibregl.Marker({ element: el, anchor: 'top' }).setLngLat([r.lon, r.lat]).addTo(map);
+        satMarkers.set(r.asset_id, m);
+      }
+      m.setLngLat([r.lon, r.lat]);
+      const el = m.getElement();
+      el.classList.toggle('over', satOver(r)); el.classList.toggle('stale', satStale(r));
+      el.querySelector('.lbl').textContent = `🛰 ${satName(r)} · ${Math.round(r.velocidad || 0)} km/h`;
+    }
+    for (const [id, m] of satMarkers) if (!seen.has(id)) { m.remove(); satMarkers.delete(id); }
+  }
+  function satPopup(assetId) {
+    const r = D.rastreo.find(x => x.asset_id === assetId); if (!r) return;
+    new maplibregl.Popup({ offset: 10 }).setLngLat([r.lon, r.lat]).setHTML(`<b>🛰 ${esc(satName(r))}</b><br>${Math.round(r.velocidad || 0)} km/h · ${r.encendido == null ? '' : r.encendido ? 'motor encendido · ' : 'motor apagado · '}${hace(r.reporte_at || r.actualizado)}${r.direccion ? '<br>' + esc(r.direccion) : ''}`).addTo(map);
+  }
+
   // Lugares
   const placeMarkers = [];
   function drawLugares() {
@@ -131,7 +165,7 @@
   let framed = false;
   function frameAll() {
     if (framed) return;
-    const pts = [...D.posiciones.map(p => [p.lon, p.lat]), ...D.lugares.map(l => [l.lon, l.lat])];
+    const pts = [...D.posiciones.map(p => [p.lon, p.lat]), ...D.rastreo.filter(r => r.lat != null).map(r => [r.lon, r.lat]), ...D.lugares.map(l => [l.lon, l.lat])];
     if (!pts.length) return;
     framed = true;
     if (pts.length === 1) { map.jumpTo({ center: pts[0], zoom: 12 }); return; }
@@ -149,7 +183,8 @@
   function renderAll() {
     fillSelects(); renderLive(); renderAlerts(); renderViajes(); renderChoferes(); renderCamiones(); renderLugares(); renderCalles();
     $('f-ajustes').velocidad_max.value = D.ajustes.velocidad_max;
-    drawTrucks(); drawLugares(); drawBloqueos(); frameAll();
+    renderSitrack();
+    drawTrucks(); drawSat(); drawLugares(); drawBloqueos(); frameAll();
   }
   const opts = (arr, label, empty) => (empty != null ? `<option value="">${esc(empty)}</option>` : '') + arr.map(x => `<option value="${esc(x.id)}">${esc(label(x))}</option>`).join('');
   function fillSelects() {
@@ -169,7 +204,14 @@
 
   function renderLive() {
     const box = $('live');
-    if (!D.posiciones.length) { box.innerHTML = '<p class="empty">Todavía ningún chofer mandó su ubicación. Aparece cuando abren la app con la cuenta de la empresa.</p>'; return; }
+    const sat = [...D.rastreo].filter(r => r.lat != null).sort((a, b) => (satOver(b) - satOver(a)) || (satStale(a) - satStale(b)) || satName(a).localeCompare(satName(b)));
+    const satHtml = sat.map(r => {
+      const cls = satOver(r) ? ' over' : satStale(r) ? ' stale' : '';
+      const sub = ['Satelital', r.encendido == null ? '' : r.encendido ? 'motor encendido' : 'motor apagado', r.direccion, hace(r.reporte_at || r.actualizado)].filter(Boolean).join(' · ');
+      return `<div class="row${cls}"><span class="ico">🛰</span><span><span class="t">${esc(satName(r))} · ${Math.round(r.velocidad || 0)} km/h</span><br><span class="m">${esc(sub)}</span></span>
+        <span class="acts"><button type="button" class="btn ghost sm" data-satfly="${esc(r.asset_id)}">Ver</button></span></div>`;
+    }).join('');
+    if (!D.posiciones.length) { box.innerHTML = satHtml || '<p class="empty">Todavía ningún chofer mandó su ubicación. Aparece cuando abren la app con la cuenta de la empresa.</p>'; return; }
     const rows = [...D.posiciones].sort((a, b) => (isOver(b) - isOver(a)) || (isStale(a) - isStale(b)) || posLabel(a).who.localeCompare(posLabel(b).who));
     box.innerHTML = rows.map(p => {
       const L = posLabel(p), v = p.viaje_id && byId(D.viajes, p.viaje_id), d = v && lugar(v.destino_id);
@@ -177,9 +219,12 @@
       const sub = [L.truck, d ? 'va a ' + d.nombre : '', hace(p.at) + (isStale(p) ? ' (sin datos nuevos)' : '')].filter(Boolean).join(' · ');
       return `<div class="row${cls}"><span class="ico">🚚</span><span><span class="t">${esc(L.who)} · ${Math.round(p.velocidad || 0)} km/h</span><br><span class="m">${esc(sub)}</span></span>
         <span class="acts"><button type="button" class="btn ghost sm" data-fly="${esc(p.chofer_id)}">Ver</button></span></div>`;
-    }).join('');
+    }).join('') + satHtml;
   }
-  $('live').addEventListener('click', e => { const b = e.target.closest('[data-fly]'); if (!b) return; const p = D.posiciones.find(x => x.chofer_id === b.dataset.fly); if (p) { fly(p.lon, p.lat); truckPopup(p.chofer_id); } });
+  $('live').addEventListener('click', e => {
+    const s = e.target.closest('[data-satfly]');
+    if (s) { const r = D.rastreo.find(x => x.asset_id === s.dataset.satfly); if (r) { fly(r.lon, r.lat); satPopup(r.asset_id); } return; }
+    const b = e.target.closest('[data-fly]'); if (!b) return; const p = D.posiciones.find(x => x.chofer_id === b.dataset.fly); if (p) { fly(p.lon, p.lat); truckPopup(p.chofer_id); } });
 
   function renderAlerts() {
     const box = $('alerts'), unseen = D.alertas.filter(a => !a.vista).length;
@@ -187,7 +232,8 @@
     if (!D.alertas.length) { box.innerHTML = '<p class="empty">Sin alertas.</p>'; return; }
     box.innerHTML = (unseen ? '<button type="button" class="btn ghost sm" data-all-seen>Marcar todas como vistas</button>' : '') + D.alertas.slice(0, 40).map(a => {
       const c = chofer(a.chofer_id), t = camion(a.camion_id);
-      return `<div class="row stack${a.vista ? '' : ' unseen'}"><span class="ico">⚠️</span><span><span class="t">${esc(c ? c.nombre : 'Chofer')}: ${Math.round(a.velocidad)} km/h (máx. ${Math.round(a.limite)})</span><br><span class="m">${esc([t && t.nombre, new Date(a.at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' })].filter(Boolean).join(' · '))}</span></span>
+      const quienVa = c ? c.nombre : t ? t.nombre : a.asset_id || 'Chofer';
+      return `<div class="row stack${a.vista ? '' : ' unseen'}"><span class="ico">${a.origen === 'satelital' ? '🛰' : '⚠️'}</span><span><span class="t">${esc(quienVa)}: ${Math.round(a.velocidad)} km/h (máx. ${Math.round(a.limite)})</span><br><span class="m">${esc([c && t && t.nombre, a.origen === 'satelital' ? 'rastreador' : '', new Date(a.at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' })].filter(Boolean).join(' · '))}</span></span>
         <span class="acts">${a.lat != null ? `<button type="button" class="btn ghost sm" data-where="${a.id}">Dónde</button>` : ''}${a.vista ? '' : `<button type="button" class="btn ghost sm" data-seen="${a.id}">Visto</button>`}</span></div>`;
     }).join('');
   }
@@ -297,17 +343,17 @@
   });
 
   // ---------- Camiones ----------
-  const F = [['nombre', 'Nombre o patente', 'text'], ['alto', 'Alto (m)', 0.05], ['peso', 'Peso total (t)', 0.5], ['largo', 'Largo (m)', 0.5], ['ancho', 'Ancho (m)', 0.05], ['eje', 'Peso por eje (t)', 0.5]];
+  const F = [['nombre', 'Nombre', 'text'], ['patente', 'Patente (como en Sitrack)', 'opt'], ['alto', 'Alto (m)', 0.05], ['peso', 'Peso total (t)', 0.5], ['largo', 'Largo (m)', 0.5], ['ancho', 'Ancho (m)', 0.05], ['eje', 'Peso por eje (t)', 0.5]];
   function renderCamiones() {
     const box = $('camiones');
     const list = D.camiones.filter(c => c.activo);
     if (!list.length) { box.innerHTML = '<p class="empty">Todavía no hay camiones.</p>'; return; }
     box.innerHTML = list.map(c => `<form class="tcard" data-camion="${c.id}">
-      ${F.map(([k, l, st]) => st === 'text' ? `<label class="wide">${l}<input name="${k}" type="text" required maxlength="60" value="${esc(c[k])}"></label>` : `<label>${l}<input name="${k}" type="number" inputmode="decimal" step="${st}" required value="${esc(c[k])}"></label>`).join('')}
+      ${F.map(([k, l, st]) => st === 'text' ? `<label>${l}<input name="${k}" type="text" required maxlength="60" value="${esc(c[k])}"></label>` : st === 'opt' ? `<label>${l}<input name="${k}" type="text" maxlength="20" autocapitalize="characters" placeholder="AB123CD" value="${esc(c[k] || '')}"></label>` : `<label>${l}<input name="${k}" type="number" inputmode="decimal" step="${st}" required value="${esc(c[k])}"></label>`).join('')}
       <label class="check wide"><input name="peligrosa" type="checkbox" ${c.peligrosa ? 'checked' : ''}> Lleva carga peligrosa</label>
       <span class="inline wide"><button type="submit" class="btn go sm">Guardar</button><button type="button" class="btn danger sm" data-delcam>Borrar</button></span></form>`).join('');
   }
-  const camionDe = f => ({ nombre: f.nombre.value.trim(), ...Object.fromEntries(F.slice(1).map(([k]) => [k, parseFloat(String(f[k].value).replace(',', '.'))])), peligrosa: f.peligrosa.checked });
+  const camionDe = f => ({ nombre: f.nombre.value.trim(), patente: f.patente.value.trim().toUpperCase() || null, ...Object.fromEntries(F.slice(2).map(([k]) => [k, parseFloat(String(f[k].value).replace(',', '.'))])), peligrosa: f.peligrosa.checked });
   $('camiones').addEventListener('submit', async e => {
     e.preventDefault(); const f = e.target;
     const row = await q(sb.from('camiones').update(camionDe(f)).eq('id', f.dataset.camion).select().single(), 'No se pudo guardar (revisá las medidas)');
@@ -413,6 +459,24 @@
     upsertLocal('bloqueos', row, true); renderCalles(); drawBloqueos(); toast('Calle marcada: las rutas de todos la esquivan.');
   }, 'Tocá en el mapa la calle por donde no se puede pasar'));
 
+  // ---------- Rastreador satelital (Sitrack) ----------
+  function renderSitrack() {
+    const box = $('sitrack'); if (!box) return;
+    const st = D.sitrack;
+    if (!st || !st.at) { box.innerHTML = '<p class="tip">Todavía no se conectó. Cuando estén cargados el usuario y la contraseña de API de Sitrack, se actualiza solo cada minuto.</p>'; return; }
+    const sin = (st.sin_asociar || []);
+    box.innerHTML = `<p class="${st.ok ? 'okmsg' : 'err'}">${st.ok ? '✓ ' : '✕ '}${esc(st.mensaje || '')}<br><span class="m">Última consulta ${esc(hace(st.at))}</span></p>
+      ${sin.length ? `<p class="tip">Unidades de Sitrack sin camión asociado: <b>${sin.map(esc).join(', ')}</b>. Cargá esa patente en el camión que corresponda (pestaña Camiones).</p>` : ''}`;
+  }
+  $('b-sitrack').addEventListener('click', async () => {
+    const b = $('b-sitrack'); b.disabled = true; b.textContent = 'Consultando…';
+    try {
+      const r = await N.funcion('sitrack', {});
+      toast(r.ok && r.data.ok ? `Sitrack: ${r.data.unidades} unidades actualizadas` : `Sitrack: ${r.data.error || 'no respondió'}`, !(r.ok && r.data.ok));
+      const { data } = await sb.from('sitrack_estado').select('*').eq('id', 1).maybeSingle(); if (data) { D.sitrack = data; renderSitrack(); }
+    } catch (e) { fail(e, 'Sitrack'); } finally { b.disabled = false; b.textContent = 'Probar ahora'; }
+  });
+
   // ---------- Ajustes ----------
   $('f-ajustes').addEventListener('submit', async e => {
     e.preventDefault();
@@ -450,19 +514,26 @@
       })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'alertas' }, p => {
         D.alertas.unshift(p.new); renderAlerts(); beep();
-        const c = chofer(p.new.chofer_id);
-        toast(`⚠️ ${c ? c.nombre : 'Un chofer'} va a ${Math.round(p.new.velocidad)} km/h (máx. ${Math.round(p.new.limite)})`, true);
-        if ('Notification' in window && Notification.permission === 'granted' && document.hidden) new Notification('Exceso de velocidad', { body: `${c ? c.nombre : 'Un chofer'}: ${Math.round(p.new.velocidad)} km/h`, icon: 'icons/icon-192.png' });
+        const c = chofer(p.new.chofer_id), t = camion(p.new.camion_id);
+        const quienVa = c ? c.nombre : t ? t.nombre : p.new.asset_id || 'Un chofer';
+        toast(`${p.new.origen === 'satelital' ? '🛰' : '⚠️'} ${quienVa} va a ${Math.round(p.new.velocidad)} km/h (máx. ${Math.round(p.new.limite)})`, true);
+        if ('Notification' in window && Notification.permission === 'granted' && document.hidden) new Notification('Exceso de velocidad', { body: `${quienVa}: ${Math.round(p.new.velocidad)} km/h`, icon: 'icons/icon-192.png' });
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'bloqueos' }, p => {
         if (p.eventType === 'INSERT' && p.new.creado_por !== me.id) toast(`⛔ ${quien(p.new.creado_por)} marcó "${p.new.calle || 'una calle'}" como No puedo pasar`);
         later();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'viajes' }, later)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rastreo' }, p => {
+        if (p.eventType === 'DELETE') D.rastreo = D.rastreo.filter(x => x.asset_id !== p.old.asset_id);
+        else { const i = D.rastreo.findIndex(x => x.asset_id === p.new.asset_id); if (i >= 0) D.rastreo[i] = p.new; else D.rastreo.push(p.new); }
+        drawSat(); if (tab === 'vivo') renderLive();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sitrack_estado' }, p => { if (p.new) { D.sitrack = p.new; renderSitrack(); } })
       .subscribe();
   }
   // "hace X min" y camiones sin datos se actualizan solos
-  setInterval(() => { if (me) { drawTrucks(); if (tab === 'vivo') renderLive(); } }, 30000);
+  setInterval(() => { if (me) { drawTrucks(); drawSat(); renderSitrack(); if (tab === 'vivo') renderLive(); } }, 30000);
 
   // ---------- Entrar / salir ----------
   let me = null;

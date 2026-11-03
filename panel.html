@@ -76,7 +76,7 @@
     <!-- Camiones -->
     <section class="pane" data-pane="camiones" hidden>
       <h2>Camiones y medidas</h2>
-      <p class="tip">Las rutas esquivan puentes bajos, límites de peso y calles prohibidas según estas medidas.</p>
+      <p class="tip">Las rutas esquivan puentes bajos, límites de peso y calles prohibidas según estas medidas. La patente sirve para unir el camión con el rastreador satelital.</p>
       <div class="list" id="camiones"></div>
       <button type="button" class="btn go" id="b-add-camion">+ Agregar camión</button>
     </section>
@@ -118,6 +118,12 @@
         <button type="submit" class="btn go">Guardar</button>
         <p class="tip wide">Si un camión la pasa, el celular del chofer suena y te llega una alerta acá.</p>
       </form>
+      <h2>Rastreador satelital (Sitrack)</h2>
+      <div class="card">
+        <div id="sitrack"></div>
+        <button type="button" class="btn ghost sm" id="b-sitrack">Probar ahora</button>
+        <p class="tip" style="margin-top:8px">Cada minuto se trae la última posición de las unidades de Sitrack. Cada unidad se asocia al camión con la misma patente.</p>
+      </div>
     </section>
   </aside>
   <div id="map" aria-label="Mapa de la flota"></div>
