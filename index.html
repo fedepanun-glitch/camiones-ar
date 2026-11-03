@@ -98,20 +98,28 @@
   <form method="dialog" class="dlg">
     <header class="dlg-head"><h2 id="set-title">Ajustes</h2><button class="round" value="close" aria-label="Cerrar">✕</button></header>
 
+    <section class="dlg-sec" id="sec-account" hidden>
+      <h3>Tu cuenta</h3>
+      <p class="acc" id="acc-name"></p>
+      <a class="big gray full linkbtn" id="b-panel" href="panel.html" hidden>Abrir el panel del dueño</a>
+      <button type="button" class="big gray full" id="b-logout">Salir de la cuenta</button>
+    </section>
+
     <section class="dlg-sec">
       <h3>Camiones</h3>
+      <p class="tip" id="trucks-note" hidden>Los camiones y sus medidas los carga el dueño en el panel. Para cambiar de camión tocá el nombre arriba de todo.</p>
       <div id="trucks" class="trucks"></div>
       <button type="button" class="big gray full" id="b-add-truck">+ Agregar camión</button>
     </section>
 
     <section class="dlg-sec">
       <h3>Velocidad máxima</h3>
-      <div class="field-row"><input id="s-speed" type="number" inputmode="numeric" min="40" max="130" step="5"><span>km/h. Avisa con sonido y voz si el camión la pasa.</span></div>
+      <div class="field-row"><input id="s-speed" type="number" inputmode="numeric" min="40" max="130" step="5"><span id="speed-note">km/h. Avisa con sonido y voz si el camión la pasa.</span></div>
     </section>
 
     <section class="dlg-sec">
       <h3>Calles evitadas</h3>
-      <p class="tip">Lugares marcados como "No puedo pasar". Las rutas los esquivan.</p>
+      <p class="tip">Lugares marcados como "No puedo pasar". Las rutas los esquivan. Con la cuenta de la empresa, lo que marca un chofer lo ven todos.</p>
       <div id="avoids" class="list"></div>
     </section>
 
@@ -120,7 +128,7 @@
       <label class="check"><input id="s-restr" type="checkbox"> Mostrar todas las restricciones que afectan al camión</label>
     </section>
 
-    <section class="dlg-sec">
+    <section class="dlg-sec" id="sec-key">
       <h3>Clave de rutas</h3>
       <input id="s-key" type="password" autocomplete="off" placeholder="Clave de OpenRouteService">
       <p class="tip">Se pega una sola vez. Se guarda en este celular.</p>
@@ -128,7 +136,7 @@
 
     <section class="dlg-sec">
       <button type="button" class="big gray full" id="b-install" hidden>Instalar en el celular</button>
-      <p class="tip">Mapa y restricciones © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a> (ODbL). Estilo de mapa: <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>. Rutas: <a href="https://openrouteservice.org" target="_blank" rel="noopener">openrouteservice</a>. Puede haber errores: respetá siempre la señalización.</p>
+      <p class="tip">Mapa y restricciones © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a> (ODbL). Estilo de mapa: <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>. Rutas: <a href="https://openrouteservice.org" target="_blank" rel="noopener">openrouteservice</a> (HeiGIT). Puede haber errores: respetá siempre la señalización.</p>
     </section>
   </form>
 </dialog>
@@ -141,8 +149,23 @@
   </form>
 </dialog>
 
+<!-- Entrar (chofer: usuario + PIN, una sola vez por celular) -->
+<dialog id="login" class="login" aria-labelledby="l-title">
+  <form id="f-login" class="dlg" autocomplete="on">
+    <div class="login-head"><img src="icons/icon.svg" alt="" width="56" height="56"><h2 id="l-title">Camiones AR</h2></div>
+    <label class="field">Usuario<input id="l-user" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" required></label>
+    <label class="field">PIN<input id="l-pin" type="password" inputmode="numeric" autocomplete="current-password" required></label>
+    <p class="error" id="l-err" role="alert" hidden></p>
+    <button type="submit" class="big go full" id="l-go">Entrar</button>
+    <p class="tip">El dueño te da el usuario y el PIN. Entrás una sola vez: el celular queda conectado.</p>
+  </form>
+</dialog>
+
 <script src="vendor/maplibre/maplibre-gl.js"></script>
 <script src="config.js" onerror="void 0"></script>
+<script src="nube-config.js" onerror="void 0"></script>
+<script src="vendor/supabase/supabase.js"></script>
+<script src="nube.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

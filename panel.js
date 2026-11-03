@@ -1,0 +1,497 @@
+/* Camiones AR — panel del dueño: choferes, camiones, lugares, viajes, ubicación en vivo, alertas y calles marcadas. */
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const fmt = n => String(n ?? '').replace('.', ',');
+  const N = window.Nube;
+  const STALE_MS = 10 * 60 * 1000;
+  const TRUCK_SVG = '<svg viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M2 7h11v8H2zM13 10h4l3 3v2h-7zM4 17.5a1.6 1.6 0 1 0 3.2 0 1.6 1.6 0 1 0-3.2 0M14 17.5a1.6 1.6 0 1 0 3.2 0 1.6 1.6 0 1 0-3.2 0"/></svg>';
+  const TIPO = { base: ['🏠', 'Base'], cliente: ['🏭', 'Cliente'], deposito: ['📦', 'Depósito'], otro: ['📍', 'Otro'] };
+  const ESTADO = { pendiente: 'Pendiente', en_curso: 'En curso', terminado: 'Terminado', cancelado: 'Cancelado' };
+
+  if (!N || !N.configurada) { $('no-cloud').hidden = false; return; }
+  const sb = N.sb;
+
+  // ---------- Datos ----------
+  const D = { choferes: [], camiones: [], lugares: [], viajes: [], posiciones: [], alertas: [], bloqueos: [], ajustes: { velocidad_max: 80 } };
+  const byId = (arr, id) => arr.find(x => x.id === id);
+  const chofer = id => byId(D.choferes, id);
+  const camion = id => byId(D.camiones, id);
+  const lugar = id => byId(D.lugares, id);
+
+  let toastT;
+  function toast(text, red) { const t = $('toast'); t.textContent = text; t.className = 'toast' + (red ? ' red' : ''); t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, 5000); }
+  const fail = (e, what) => { console.warn(e); toast(`${what}: ${e && e.message ? e.message : 'error'}`, true); };
+  async function q(p, what) { const { data, error } = await p; if (error) { fail(error, what); throw error; } return data; }
+
+  const hace = iso => {
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 60) return 'recién'; if (s < 3600) return `hace ${Math.round(s / 60)} min`;
+    if (s < 86400) return `hace ${Math.round(s / 3600)} h`; return new Date(iso).toLocaleDateString('es-AR');
+  };
+  const hoyISO = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
+  const fechaTxt = f => new Date(f + 'T12:00:00').toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'numeric' });
+
+  async function loadAll() {
+    const desde = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+    const [ch, ca, lu, vi, po, al, bl, aj] = await Promise.all([
+      sb.from('perfiles').select('*').eq('rol', 'chofer').order('nombre'),
+      sb.from('camiones').select('*').order('nombre'),
+      sb.from('lugares').select('*').order('nombre'),
+      sb.from('viajes').select('*').or(`fecha.gte.${desde},estado.in.(pendiente,en_curso)`).order('fecha', { ascending: false }).order('creado', { ascending: false }),
+      sb.from('posiciones').select('*'),
+      sb.from('alertas').select('*').order('at', { ascending: false }).limit(60),
+      sb.from('bloqueos').select('*').eq('activo', true).order('creado', { ascending: false }),
+      sb.from('ajustes').select('*').eq('id', 1).maybeSingle(),
+    ]);
+    for (const [k, r] of Object.entries({ choferes: ch, camiones: ca, lugares: lu, viajes: vi, posiciones: po, alertas: al, bloqueos: bl })) {
+      if (r.error) fail(r.error, 'No se pudo cargar ' + k); else D[k] = r.data;
+    }
+    if (!aj.error && aj.data) D.ajustes = aj.data;
+    renderAll();
+  }
+
+  // ---------- Pestañas ----------
+  let tab = 'vivo';
+  document.querySelectorAll('.tabs [data-tab]').forEach(b => b.addEventListener('click', () => {
+    tab = b.dataset.tab;
+    document.querySelectorAll('.tabs [data-tab]').forEach(x => x.setAttribute('aria-selected', String(x === b)));
+    document.querySelectorAll('[data-pane]').forEach(p => { p.hidden = p.dataset.pane !== tab; });
+    if (tab !== 'lugares' && tab !== 'calles') stopPick();
+  }));
+
+  // ---------- Mapa ----------
+  const map = new maplibregl.Map({ container: 'map', style: 'https://tiles.openfreemap.org/styles/liberty', center: [-58.6, -34.5], zoom: 9, attributionControl: false });
+  map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: '© colaboradores de OpenStreetMap (ODbL)' }), 'bottom-right');
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+  let styleOk = false, fellBack = false;
+  map.on('style.load', () => { styleOk = true; addLayers(); });
+  const fallback = () => { if (fellBack || styleOk) return; fellBack = true; map.setStyle({ version: 8, sources: { osm: { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 19 } }, layers: [{ id: 'osm', type: 'raster', source: 'osm' }] }); };
+  map.on('error', () => { if (!styleOk) fallback(); });
+  setTimeout(fallback, 10000);
+  const EMPTY = { type: 'FeatureCollection', features: [] };
+  function addLayers() {
+    if (map.getSource('bloqueos')) return;
+    map.addSource('bloqueos', { type: 'geojson', data: EMPTY });
+    map.addLayer({ id: 'bloqueos', type: 'circle', source: 'bloqueos', paint: { 'circle-radius': 8, 'circle-color': '#e07a00', 'circle-stroke-color': '#fff', 'circle-stroke-width': 3 } });
+    drawBloqueos();
+  }
+  map.on('click', 'bloqueos', e => {
+    const b = byId(D.bloqueos, e.features[0].properties.id); if (!b) return;
+    new maplibregl.Popup().setLngLat([b.lon, b.lat]).setHTML(`<b>⛔ ${esc(b.calle || 'Calle sin nombre')}</b><br><span>${esc(quien(b.creado_por))} · ${hace(b.creado)}</span>`).addTo(map);
+  });
+  function drawBloqueos() {
+    const s = map.getSource && map.getSource('bloqueos');
+    if (s) s.setData({ type: 'FeatureCollection', features: D.bloqueos.map(b => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [b.lon, b.lat] }, properties: { id: b.id } })) });
+  }
+  const fly = (lon, lat, z = 15) => map.flyTo({ center: [lon, lat], zoom: z, duration: 700 });
+
+  // Camiones en vivo (un marcador por chofer)
+  const truckMarkers = new Map();
+  const isOver = p => p.velocidad != null && p.velocidad > D.ajustes.velocidad_max && Date.now() - new Date(p.at).getTime() < 2 * 60 * 1000;
+  const isStale = p => Date.now() - new Date(p.at).getTime() > STALE_MS;
+  function posLabel(p) { const c = chofer(p.chofer_id), t = camion(p.camion_id); return { who: c ? c.nombre : 'Chofer', truck: t ? t.nombre : '' }; }
+  function drawTrucks() {
+    const seen = new Set();
+    for (const p of D.posiciones) {
+      seen.add(p.chofer_id);
+      let m = truckMarkers.get(p.chofer_id);
+      if (!m) {
+        const el = document.createElement('div'); el.className = 'truck';
+        el.innerHTML = `<div class="dot">${TRUCK_SVG}</div><div class="lbl"></div>`;
+        el.addEventListener('click', ev => { ev.stopPropagation(); truckPopup(p.chofer_id); });
+        m = new maplibregl.Marker({ element: el, anchor: 'top' }).setLngLat([p.lon, p.lat]).addTo(map);
+        truckMarkers.set(p.chofer_id, m);
+      }
+      m.setLngLat([p.lon, p.lat]);
+      const el = m.getElement(), L = posLabel(p);
+      el.classList.toggle('over', isOver(p)); el.classList.toggle('stale', isStale(p));
+      el.querySelector('.lbl').textContent = `${L.who} · ${Math.round(p.velocidad || 0)} km/h`;
+      el.setAttribute('aria-label', `${L.who}, ${L.truck}, ${Math.round(p.velocidad || 0)} km/h`);
+    }
+    for (const [id, m] of truckMarkers) if (!seen.has(id)) { m.remove(); truckMarkers.delete(id); }
+  }
+  function truckPopup(choferId) {
+    const p = D.posiciones.find(x => x.chofer_id === choferId); if (!p) return;
+    const L = posLabel(p), v = p.viaje_id && byId(D.viajes, p.viaje_id), d = v && lugar(v.destino_id);
+    new maplibregl.Popup({ offset: 10 }).setLngLat([p.lon, p.lat]).setHTML(`<b>${esc(L.who)}</b>${L.truck ? ' · ' + esc(L.truck) : ''}<br>${Math.round(p.velocidad || 0)} km/h · ${hace(p.at)}${d ? `<br>Va a ${esc(d.nombre)}` : ''}`).addTo(map);
+  }
+
+  // Lugares
+  const placeMarkers = [];
+  function drawLugares() {
+    placeMarkers.splice(0).forEach(m => m.remove());
+    for (const l of D.lugares) {
+      const el = document.createElement('div'); el.className = 'place'; el.textContent = (TIPO[l.tipo] || TIPO.otro)[0]; el.title = l.nombre;
+      el.addEventListener('click', ev => { ev.stopPropagation(); new maplibregl.Popup({ offset: 12 }).setLngLat([l.lon, l.lat]).setHTML(`<b>${esc(l.nombre)}</b><br>${esc((TIPO[l.tipo] || TIPO.otro)[1])}${l.direccion ? ' · ' + esc(l.direccion) : ''}${l.notas ? '<br>' + esc(l.notas) : ''}`).addTo(map); });
+      placeMarkers.push(new maplibregl.Marker({ element: el }).setLngLat([l.lon, l.lat]).addTo(map));
+    }
+  }
+  let framed = false;
+  function frameAll() {
+    if (framed) return;
+    const pts = [...D.posiciones.map(p => [p.lon, p.lat]), ...D.lugares.map(l => [l.lon, l.lat])];
+    if (!pts.length) return;
+    framed = true;
+    if (pts.length === 1) { map.jumpTo({ center: pts[0], zoom: 12 }); return; }
+    const lo = pts.map(p => p[0]), la = pts.map(p => p[1]);
+    map.fitBounds([[Math.min(...lo), Math.min(...la)], [Math.max(...lo), Math.max(...la)]], { padding: 60, maxZoom: 14, duration: 0 });
+  }
+
+  // Elegir un punto en el mapa (para lugares y para marcar calles)
+  let picking = null;
+  function startPick(fn, msg) { picking = fn; document.body.classList.add('picking'); toast(msg); }
+  function stopPick() { picking = null; document.body.classList.remove('picking'); }
+  map.on('click', e => { if (!picking) return; const fn = picking; stopPick(); fn(e.lngLat.lat, e.lngLat.lng); });
+
+  // ---------- Render ----------
+  function renderAll() {
+    fillSelects(); renderLive(); renderAlerts(); renderViajes(); renderChoferes(); renderCamiones(); renderLugares(); renderCalles();
+    $('f-ajustes').velocidad_max.value = D.ajustes.velocidad_max;
+    drawTrucks(); drawLugares(); drawBloqueos(); frameAll();
+  }
+  const opts = (arr, label, empty) => (empty != null ? `<option value="">${esc(empty)}</option>` : '') + arr.map(x => `<option value="${esc(x.id)}">${esc(label(x))}</option>`).join('');
+  function fillSelects() {
+    const keep = sel => { const v = sel.value; return () => { if ([...sel.options].some(o => o.value === v)) sel.value = v; }; };
+    const fv = $('f-viaje'), fc = $('f-chofer');
+    const lugLabel = l => `${(TIPO[l.tipo] || TIPO.otro)[0]} ${l.nombre}`;
+    const camActivos = D.camiones.filter(c => c.activo);
+    for (const [sel, html] of [
+      [fv.chofer_id, opts(D.choferes, c => c.nombre, D.choferes.length ? 'Elegí el chofer' : 'Primero creá un chofer')],
+      [fv.camion_id, opts(camActivos, c => c.nombre, 'El que tenga el chofer')],
+      [fv.origen_id, opts(D.lugares, lugLabel, 'Donde esté el camión')],
+      [fv.destino_id, opts(D.lugares, lugLabel, D.lugares.length ? 'Elegí el destino' : 'Primero cargá un lugar')],
+      [fc.camion_id, opts(camActivos, c => c.nombre, 'Ninguno')],
+    ]) { const r = keep(sel); sel.innerHTML = html; r(); }
+    if (!fv.fecha.value) fv.fecha.value = hoyISO();
+  }
+
+  function renderLive() {
+    const box = $('live');
+    if (!D.posiciones.length) { box.innerHTML = '<p class="empty">Todavía ningún chofer mandó su ubicación. Aparece cuando abren la app con la cuenta de la empresa.</p>'; return; }
+    const rows = [...D.posiciones].sort((a, b) => (isOver(b) - isOver(a)) || (isStale(a) - isStale(b)) || posLabel(a).who.localeCompare(posLabel(b).who));
+    box.innerHTML = rows.map(p => {
+      const L = posLabel(p), v = p.viaje_id && byId(D.viajes, p.viaje_id), d = v && lugar(v.destino_id);
+      const cls = isOver(p) ? ' over' : isStale(p) ? ' stale' : '';
+      const sub = [L.truck, d ? 'va a ' + d.nombre : '', hace(p.at) + (isStale(p) ? ' (sin datos nuevos)' : '')].filter(Boolean).join(' · ');
+      return `<div class="row${cls}"><span class="ico">🚚</span><span><span class="t">${esc(L.who)} · ${Math.round(p.velocidad || 0)} km/h</span><br><span class="m">${esc(sub)}</span></span>
+        <span class="acts"><button type="button" class="btn ghost sm" data-fly="${esc(p.chofer_id)}">Ver</button></span></div>`;
+    }).join('');
+  }
+  $('live').addEventListener('click', e => { const b = e.target.closest('[data-fly]'); if (!b) return; const p = D.posiciones.find(x => x.chofer_id === b.dataset.fly); if (p) { fly(p.lon, p.lat); truckPopup(p.chofer_id); } });
+
+  function renderAlerts() {
+    const box = $('alerts'), unseen = D.alertas.filter(a => !a.vista).length;
+    $('badge-alertas').hidden = !unseen; $('badge-alertas').textContent = unseen;
+    if (!D.alertas.length) { box.innerHTML = '<p class="empty">Sin alertas.</p>'; return; }
+    box.innerHTML = (unseen ? '<button type="button" class="btn ghost sm" data-all-seen>Marcar todas como vistas</button>' : '') + D.alertas.slice(0, 40).map(a => {
+      const c = chofer(a.chofer_id), t = camion(a.camion_id);
+      return `<div class="row stack${a.vista ? '' : ' unseen'}"><span class="ico">⚠️</span><span><span class="t">${esc(c ? c.nombre : 'Chofer')}: ${Math.round(a.velocidad)} km/h (máx. ${Math.round(a.limite)})</span><br><span class="m">${esc([t && t.nombre, new Date(a.at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' })].filter(Boolean).join(' · '))}</span></span>
+        <span class="acts">${a.lat != null ? `<button type="button" class="btn ghost sm" data-where="${a.id}">Dónde</button>` : ''}${a.vista ? '' : `<button type="button" class="btn ghost sm" data-seen="${a.id}">Visto</button>`}</span></div>`;
+    }).join('');
+  }
+  $('alerts').addEventListener('click', async e => {
+    const w = e.target.closest('[data-where]'), s = e.target.closest('[data-seen]'), all = e.target.closest('[data-all-seen]');
+    if (w) { const a = D.alertas.find(x => String(x.id) === w.dataset.where); if (a) { fly(a.lon, a.lat); new maplibregl.Popup().setLngLat([a.lon, a.lat]).setHTML(`<b>${Math.round(a.velocidad)} km/h</b><br>${esc(new Date(a.at).toLocaleString('es-AR'))}`).addTo(map); } }
+    if (s) { await q(sb.from('alertas').update({ vista: true }).eq('id', s.dataset.seen), 'No se pudo marcar'); const a = D.alertas.find(x => String(x.id) === s.dataset.seen); if (a) a.vista = true; renderAlerts(); }
+    if (all) { await q(sb.from('alertas').update({ vista: true }).eq('vista', false), 'No se pudo marcar'); D.alertas.forEach(a => { a.vista = true; }); renderAlerts(); }
+  });
+
+  // ---------- Viajes ----------
+  function renderViajes() {
+    const box = $('viajes');
+    if (!D.viajes.length) { box.innerHTML = '<p class="empty">Todavía no hay viajes.</p>'; return; }
+    const order = { en_curso: 0, pendiente: 1, terminado: 2, cancelado: 3 };
+    const rows = [...D.viajes].sort((a, b) => order[a.estado] - order[b.estado] || (order[a.estado] < 2 ? a.fecha.localeCompare(b.fecha) : b.fecha.localeCompare(a.fecha)));
+    box.innerHTML = rows.map(v => {
+      const c = chofer(v.chofer_id), t = camion(v.camion_id), o = lugar(v.origen_id), d = lugar(v.destino_id);
+      const sub = [fechaTxt(v.fecha), c ? c.nombre : 'Sin chofer', t && t.nombre, o && 'desde ' + o.nombre, v.notas].filter(Boolean).join(' · ');
+      const acts = v.estado === 'pendiente' || v.estado === 'en_curso' ? `<button type="button" class="btn danger sm" data-cancel="${v.id}">Cancelar</button>` : `<button type="button" class="btn danger sm" data-del="${v.id}">Borrar</button>`;
+      return `<div class="row"><span class="ico">${d ? (TIPO[d.tipo] || TIPO.otro)[0] : '❓'}</span><span><span class="t">${esc(d ? d.nombre : 'Destino borrado')} <span class="state ${v.estado}">${ESTADO[v.estado]}</span></span><br><span class="m">${esc(sub)}</span></span><span class="acts">${acts}</span></div>`;
+    }).join('');
+  }
+  $('f-viaje').chofer_id.addEventListener('change', e => { const c = chofer(e.target.value); if (c && c.camion_id) $('f-viaje').camion_id.value = c.camion_id; });
+  $('f-viaje').addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = e.target, btn = f.querySelector('[type=submit]');
+    if (f.origen_id.value && f.origen_id.value === f.destino_id.value) { toast('El origen y el destino son el mismo lugar.', true); return; }
+    btn.disabled = true;
+    try {
+      const row = await q(sb.from('viajes').insert({ chofer_id: f.chofer_id.value, camion_id: f.camion_id.value || null, origen_id: f.origen_id.value || null, destino_id: f.destino_id.value, fecha: f.fecha.value, notas: f.notas.value.trim() || null }).select().single(), 'No se pudo asignar');
+      upsertLocal('viajes', row); f.notas.value = ''; renderViajes(); renderLive();
+      toast(`Viaje asignado a ${chofer(row.chofer_id)?.nombre || 'el chofer'}. Le aparece en la app.`);
+    } catch (err) { /* ya avisado */ } finally { btn.disabled = false; }
+  });
+  $('viajes').addEventListener('click', async e => {
+    const c = e.target.closest('[data-cancel]'), d = e.target.closest('[data-del]');
+    if (c && confirm('¿Cancelar este viaje? Al chofer le deja de aparecer.')) { const row = await q(sb.from('viajes').update({ estado: 'cancelado' }).eq('id', c.dataset.cancel).select().single(), 'No se pudo cancelar'); upsertLocal('viajes', row); renderViajes(); }
+    if (d && confirm('¿Borrar este viaje del historial?')) { await q(sb.from('viajes').delete().eq('id', d.dataset.del), 'No se pudo borrar'); D.viajes = D.viajes.filter(v => v.id !== d.dataset.del); renderViajes(); }
+  });
+
+  // ---------- Choferes ----------
+  const randPin = () => String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, '0');
+  $('f-chofer').pin.value = randPin();
+  $('b-pin').addEventListener('click', () => { $('f-chofer').pin.value = randPin(); });
+  $('f-chofer').nombre.addEventListener('input', e => { const f = $('f-chofer'); if (!f.usuario.dataset.touched) f.usuario.value = N.limpiarUsuario(e.target.value.split(' ')[0]).replace(/[^a-z0-9._-]/g, ''); });
+  $('f-chofer').usuario.addEventListener('input', e => { e.target.dataset.touched = '1'; });
+  const appUrl = () => new URL('./', location.href).href;
+  function credsCard(nombre, usuario, pin) {
+    const txt = `Hola ${nombre}! Entrá a la app de Camiones AR: ${appUrl()}\nUsuario: ${usuario}\nPIN: ${pin}\nEntrás una sola vez y el celular queda conectado.`;
+    const box = $('new-chofer');
+    box.innerHTML = `<b>Listo. Pasale esto a ${esc(nombre)}:</b><p>App: ${esc(appUrl())}<br>Usuario: <b>${esc(usuario)}</b><br>PIN: <b>${esc(pin)}</b></p>
+      <span class="inline"><button type="button" class="btn ghost sm" id="b-copy">Copiar</button><a class="btn go sm" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(txt)}">Mandar por WhatsApp</a></span>
+      <p class="tip">El PIN no se vuelve a mostrar. Si se lo olvida, poné uno nuevo desde la lista.</p>`;
+    box.hidden = false;
+    $('b-copy').addEventListener('click', () => navigator.clipboard.writeText(txt).then(() => toast('Copiado'), () => toast('No se pudo copiar', true)));
+  }
+  $('f-chofer').addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = e.target, btn = f.querySelector('[type=submit]'); btn.disabled = true;
+    const body = { accion: 'crear', nombre: f.nombre.value.trim(), usuario: f.usuario.value.trim(), pin: f.pin.value.trim(), camion_id: f.camion_id.value || null, telefono: f.telefono.value.trim() || null };
+    try {
+      const r = await N.funcion('choferes', body);
+      if (!r.ok) { toast(r.data.error?.message || 'No se pudo crear el chofer', true); return; }
+      credsCard(body.nombre, r.data.usuario, body.pin);
+      f.reset(); delete f.usuario.dataset.touched; f.pin.value = randPin();
+      await loadAll();
+    } catch (err) { fail(err, 'No se pudo crear el chofer'); } finally { btn.disabled = false; }
+  });
+  function renderChoferes() {
+    const box = $('choferes');
+    if (!D.choferes.length) { box.innerHTML = '<p class="empty">Todavía no hay choferes.</p>'; return; }
+    box.innerHTML = D.choferes.map(c => {
+      const p = D.posiciones.find(x => x.chofer_id === c.id);
+      return `<div class="row stack"><span class="ico">👤</span><span><span class="t">${esc(c.nombre)}</span><br><span class="m">Usuario: ${esc(c.usuario)}${c.telefono ? ' · ' + esc(c.telefono) : ''} · ${p ? 'última ubicación ' + hace(p.at) : 'todavía no entró'}</span>
+        <label class="m" style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap">Camión <select data-cam="${c.id}" style="min-width:0;flex:1">${opts(D.camiones.filter(x => x.activo), x => x.nombre, 'Ninguno')}</select></label></span>
+        <span class="acts"><button type="button" class="btn ghost sm" data-pin="${c.id}">Nuevo PIN</button><button type="button" class="btn ghost sm" data-out="${c.id}" title="Lo desconecta de todos sus celulares">Desconectar</button><button type="button" class="btn danger sm" data-delch="${c.id}">Borrar</button></span></div>`;
+    }).join('');
+    box.querySelectorAll('[data-cam]').forEach(s => { s.value = chofer(s.dataset.cam).camion_id || ''; });
+  }
+  $('choferes').addEventListener('change', async e => {
+    const s = e.target.closest('[data-cam]'); if (!s) return;
+    const row = await q(sb.from('perfiles').update({ camion_id: s.value || null }).eq('id', s.dataset.cam).select().single(), 'No se pudo cambiar el camión');
+    upsertLocal('choferes', row); toast('Camión actualizado');
+  });
+  $('choferes').addEventListener('click', async e => {
+    const pin = e.target.closest('[data-pin]'), out = e.target.closest('[data-out]'), del = e.target.closest('[data-delch]');
+    const b = pin || out || del; if (!b) return;
+    const c = chofer(b.dataset.pin || b.dataset.out || b.dataset.delch);
+    if (!c) return;
+    if (pin) {
+      const nuevo = prompt(`Nuevo PIN para ${c.nombre} (4 a 8 números). Se va a tener que volver a conectar:`, randPin());
+      if (!nuevo) return;
+      const r = await N.funcion('choferes', { accion: 'pin', id: c.id, pin: nuevo.trim() });
+      if (!r.ok) { toast(r.data.error?.message || 'No se pudo cambiar el PIN', true); return; }
+      credsCard(c.nombre, c.usuario, nuevo.trim()); $('new-chofer').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    if (out && confirm(`¿Desconectar a ${c.nombre} de todos sus celulares? Va a tener que entrar de nuevo con su PIN (en menos de una hora deja de mandar datos).`)) {
+      const r = await N.funcion('choferes', { accion: 'cerrar', id: c.id });
+      toast(r.ok ? `${c.nombre} desconectado` : (r.data.error?.message || 'No se pudo'), !r.ok);
+    }
+    if (del && confirm(`¿Borrar a ${c.nombre}? No va a poder entrar más. Sus viajes quedan en el historial sin chofer.`)) {
+      const r = await N.funcion('choferes', { accion: 'borrar', id: c.id });
+      if (!r.ok) { toast(r.data.error?.message || 'No se pudo borrar', true); return; }
+      await loadAll(); toast(`${c.nombre} borrado`);
+    }
+  });
+
+  // ---------- Camiones ----------
+  const F = [['nombre', 'Nombre o patente', 'text'], ['alto', 'Alto (m)', 0.05], ['peso', 'Peso total (t)', 0.5], ['largo', 'Largo (m)', 0.5], ['ancho', 'Ancho (m)', 0.05], ['eje', 'Peso por eje (t)', 0.5]];
+  function renderCamiones() {
+    const box = $('camiones');
+    const list = D.camiones.filter(c => c.activo);
+    if (!list.length) { box.innerHTML = '<p class="empty">Todavía no hay camiones.</p>'; return; }
+    box.innerHTML = list.map(c => `<form class="tcard" data-camion="${c.id}">
+      ${F.map(([k, l, st]) => st === 'text' ? `<label class="wide">${l}<input name="${k}" type="text" required maxlength="60" value="${esc(c[k])}"></label>` : `<label>${l}<input name="${k}" type="number" inputmode="decimal" step="${st}" required value="${esc(c[k])}"></label>`).join('')}
+      <label class="check wide"><input name="peligrosa" type="checkbox" ${c.peligrosa ? 'checked' : ''}> Lleva carga peligrosa</label>
+      <span class="inline wide"><button type="submit" class="btn go sm">Guardar</button><button type="button" class="btn danger sm" data-delcam>Borrar</button></span></form>`).join('');
+  }
+  const camionDe = f => ({ nombre: f.nombre.value.trim(), ...Object.fromEntries(F.slice(1).map(([k]) => [k, parseFloat(String(f[k].value).replace(',', '.'))])), peligrosa: f.peligrosa.checked });
+  $('camiones').addEventListener('submit', async e => {
+    e.preventDefault(); const f = e.target;
+    const row = await q(sb.from('camiones').update(camionDe(f)).eq('id', f.dataset.camion).select().single(), 'No se pudo guardar (revisá las medidas)');
+    upsertLocal('camiones', row); fillSelects(); toast('Camión guardado');
+  });
+  $('camiones').addEventListener('click', async e => {
+    if (!e.target.closest('[data-delcam]')) return;
+    const f = e.target.closest('form'), c = camion(f.dataset.camion);
+    if (!confirm(`¿Borrar ${c.nombre}? Deja de aparecer en la app de los choferes.`)) return;
+    // Se desactiva (no se borra) para no perder el historial de viajes y alertas
+    const row = await q(sb.from('camiones').update({ activo: false }).eq('id', c.id).select().single(), 'No se pudo borrar');
+    upsertLocal('camiones', row); renderCamiones(); fillSelects();
+  });
+  $('b-add-camion').addEventListener('click', async () => {
+    const row = await q(sb.from('camiones').insert({ nombre: 'Camión nuevo' }).select().single(), 'No se pudo agregar');
+    upsertLocal('camiones', row); renderCamiones(); fillSelects();
+    const f = document.querySelector(`[data-camion="${row.id}"]`); if (f) { f.scrollIntoView({ behavior: 'smooth', block: 'center' }); f.nombre.select(); }
+  });
+
+  // ---------- Lugares ----------
+  const fl = $('f-lugar');
+  function setWhere(lat, lon, txt) {
+    fl.lat.value = lat; fl.lon.value = lon;
+    $('lugar-where').textContent = `Ubicación: ${txt ? txt + ' — ' : ''}${(+lat).toFixed(5)}, ${(+lon).toFixed(5)}`;
+    pickMarker && pickMarker.remove();
+    pickMarker = new maplibregl.Marker({ color: '#12873e' }).setLngLat([lon, lat]).addTo(map);
+    fly(lon, lat, 16);
+  }
+  let pickMarker = null;
+  function resetLugar() {
+    fl.reset(); fl.id.value = ''; fl.lat.value = ''; fl.lon.value = ''; $('lugar-res').innerHTML = '';
+    $('lugar-title').textContent = 'Nuevo lugar'; $('b-lugar-cancel').hidden = true;
+    $('lugar-where').textContent = 'Ubicación: buscá la dirección, pegá las coordenadas o tocá el mapa.';
+    pickMarker && pickMarker.remove(); pickMarker = null;
+  }
+  $('b-lugar-mapa').addEventListener('click', () => startPick((lat, lon) => setWhere(lat, lon, 'marcado en el mapa'), 'Tocá el mapa donde está el lugar (la entrada de camiones)'));
+  $('b-lugar-buscar').addEventListener('click', async () => {
+    const text = (fl.direccion.value || fl.nombre.value).trim();
+    const m = text.match(/(-?\d{1,2}\.\d{3,})\s*[, ]\s*(-?\d{1,3}\.\d{3,})/);
+    if (m) { setWhere(+m[1], +m[2], 'coordenadas pegadas'); return; }
+    if (text.length < 3) { toast('Escribí la dirección (o el nombre) para buscar.', true); return; }
+    const box = $('lugar-res'); box.innerHTML = '<p class="empty">Buscando…</p>';
+    const c = map.getCenter();
+    const r = await N.funcion('rutas', { op: 'search', params: { text, 'boundary.country': 'AR', size: 6, 'focus.point.lat': c.lat, 'focus.point.lon': c.lng } }).catch(() => ({ ok: false, data: {} }));
+    if (!r.ok || !r.data.features) { box.innerHTML = `<p class="empty">${esc(r.data.error?.message || 'El buscador no respondió.')} Podés tocar el mapa.</p>`; return; }
+    if (!r.data.features.length) { box.innerHTML = '<p class="empty">No encontré esa dirección. Probá tocando el mapa.</p>'; return; }
+    box.innerHTML = r.data.features.map((f, i) => `<button type="button" class="row" data-res="${i}" style="text-align:left;cursor:pointer"><span class="ico">📍</span><span class="t">${esc(f.properties.label.replace(/, Argentina$/, ''))}</span><span></span></button>`).join('');
+    box.onclick = e => { const b = e.target.closest('[data-res]'); if (!b) return; const f = r.data.features[+b.dataset.res]; setWhere(f.geometry.coordinates[1], f.geometry.coordinates[0], f.properties.label.replace(/, Argentina$/, '')); if (!fl.direccion.value) fl.direccion.value = f.properties.name || ''; box.innerHTML = ''; };
+  });
+  $('b-lugar-cancel').addEventListener('click', resetLugar);
+  fl.addEventListener('submit', async e => {
+    e.preventDefault();
+    if (!fl.lat.value) { toast('Falta la ubicación: buscá la dirección o tocá el mapa.', true); return; }
+    const data = { nombre: fl.nombre.value.trim(), tipo: fl.tipo.value, direccion: fl.direccion.value.trim() || null, notas: fl.notas.value.trim() || null, lat: +fl.lat.value, lon: +fl.lon.value };
+    const row = await q(fl.id.value ? sb.from('lugares').update(data).eq('id', fl.id.value).select().single() : sb.from('lugares').insert(data).select().single(), 'No se pudo guardar el lugar');
+    upsertLocal('lugares', row); D.lugares.sort((a, b) => a.nombre.localeCompare(b.nombre));
+    resetLugar(); renderLugares(); drawLugares(); fillSelects(); toast('Lugar guardado');
+  });
+  function renderLugares() {
+    const box = $('lugares');
+    if (!D.lugares.length) { box.innerHTML = '<p class="empty">Todavía no hay lugares. Empezá por la base (por ejemplo, Delta Point).</p>'; return; }
+    box.innerHTML = D.lugares.map(l => `<div class="row stack"><span class="ico">${(TIPO[l.tipo] || TIPO.otro)[0]}</span><span><span class="t">${esc(l.nombre)}</span><br><span class="m">${esc([(TIPO[l.tipo] || TIPO.otro)[1], l.direccion, l.notas].filter(Boolean).join(' · '))}</span></span>
+      <span class="acts"><button type="button" class="btn ghost sm" data-lfly="${l.id}">Ver</button><button type="button" class="btn ghost sm" data-ledit="${l.id}">Editar</button><button type="button" class="btn danger sm" data-ldel="${l.id}">Borrar</button></span></div>`).join('');
+  }
+  $('lugares').addEventListener('click', async e => {
+    const b = e.target.closest('button'); if (!b) return;
+    const l = lugar(b.dataset.lfly || b.dataset.ledit || b.dataset.ldel); if (!l) return;
+    if (b.dataset.lfly) fly(l.lon, l.lat, 16);
+    if (b.dataset.ledit) {
+      fl.id.value = l.id; fl.nombre.value = l.nombre; fl.tipo.value = l.tipo; fl.direccion.value = l.direccion || ''; fl.notas.value = l.notas || '';
+      setWhere(l.lat, l.lon, 'actual'); $('lugar-title').textContent = 'Editar lugar'; $('b-lugar-cancel').hidden = false;
+      fl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    if (b.dataset.ldel) {
+      if (D.viajes.some(v => v.destino_id === l.id)) { toast('Ese lugar es destino de algún viaje: borrá o cambiá esos viajes primero.', true); return; }
+      if (!confirm(`¿Borrar ${l.nombre}?`)) return;
+      await q(sb.from('lugares').delete().eq('id', l.id), 'No se pudo borrar');
+      D.lugares = D.lugares.filter(x => x.id !== l.id); renderLugares(); drawLugares(); fillSelects();
+    }
+  });
+
+  // ---------- Calles marcadas ----------
+  const quien = id => { if (!id) return 'alguien'; if (me && id === me.id) return 'vos'; const c = chofer(id); return c ? c.nombre : 'alguien'; };
+  function renderCalles() {
+    const box = $('calles');
+    if (!D.bloqueos.length) { box.innerHTML = '<p class="empty">No hay calles marcadas.</p>'; return; }
+    box.innerHTML = D.bloqueos.map(b => `<div class="row"><span class="ico">⛔</span><span><span class="t">${esc(b.calle || 'Calle sin nombre')}</span><br><span class="m">Marcó ${esc(quien(b.creado_por))} · ${esc(hace(b.creado))}${b.nota ? ' · ' + esc(b.nota) : ''}</span></span>
+      <span class="acts"><button type="button" class="btn ghost sm" data-bfly="${b.id}">Ver</button><button type="button" class="btn danger sm" data-bdel="${b.id}">Sacar</button></span></div>`).join('');
+  }
+  $('calles').addEventListener('click', async e => {
+    const b = e.target.closest('button'); if (!b) return;
+    const x = byId(D.bloqueos, b.dataset.bfly || b.dataset.bdel); if (!x) return;
+    if (b.dataset.bfly) fly(x.lon, x.lat, 17);
+    if (b.dataset.bdel && confirm(`¿Sacar "${x.calle || 'esta calle'}"? Las rutas van a volver a usarla.`)) {
+      await q(sb.from('bloqueos').delete().eq('id', x.id), 'No se pudo sacar');
+      D.bloqueos = D.bloqueos.filter(y => y.id !== x.id); renderCalles(); drawBloqueos();
+    }
+  });
+  $('b-marcar').addEventListener('click', () => startPick(async (lat, lon) => {
+    const calle = prompt('¿Qué calle es? (para que los choferes la reconozcan)', '');
+    if (calle === null) return;
+    const row = await q(sb.from('bloqueos').insert({ lat: +lat.toFixed(6), lon: +lon.toFixed(6), calle: calle.trim() || null, creado_por: me.id }).select().single(), 'No se pudo marcar');
+    upsertLocal('bloqueos', row, true); renderCalles(); drawBloqueos(); toast('Calle marcada: las rutas de todos la esquivan.');
+  }, 'Tocá en el mapa la calle por donde no se puede pasar'));
+
+  // ---------- Ajustes ----------
+  $('f-ajustes').addEventListener('submit', async e => {
+    e.preventDefault();
+    const v = parseInt(e.target.velocidad_max.value, 10);
+    const row = await q(sb.from('ajustes').update({ velocidad_max: v }).eq('id', 1).select().single(), 'No se pudo guardar');
+    D.ajustes = row; renderLive(); drawTrucks(); toast(`Velocidad máxima: ${v} km/h. Les llega a todos los choferes.`);
+  });
+
+  // ---------- En vivo ----------
+  function upsertLocal(k, row, front) {
+    const i = D[k].findIndex(x => (x.id ?? x.chofer_id) === (row.id ?? row.chofer_id));
+    if (i >= 0) D[k][i] = row; else if (front) D[k].unshift(row); else D[k].push(row);
+  }
+  let audio = null;
+  function beep() {
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      for (const [t, f] of [[0, 880], [0.25, 1100]]) {
+        const o = audio.createOscillator(), g = audio.createGain(); o.frequency.value = f; o.type = 'square';
+        g.gain.setValueAtTime(0.15, audio.currentTime + t); g.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + t + 0.2);
+        o.connect(g).connect(audio.destination); o.start(audio.currentTime + t); o.stop(audio.currentTime + t + 0.2);
+      }
+    } catch (e) { /* sin sonido */ }
+  }
+  document.addEventListener('click', () => { try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch (e) { /* nada */ } }, { once: true });
+
+  let channel = null, reloadT = 0;
+  function subscribe() {
+    if (channel) return;
+    const later = () => { clearTimeout(reloadT); reloadT = setTimeout(loadAll, 800); };
+    channel = sb.channel('panel')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'posiciones' }, p => {
+        if (p.eventType === 'DELETE') D.posiciones = D.posiciones.filter(x => x.chofer_id !== p.old.chofer_id); else upsertLocal('posiciones', p.new);
+        drawTrucks(); if (tab === 'vivo') renderLive();
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'alertas' }, p => {
+        D.alertas.unshift(p.new); renderAlerts(); beep();
+        const c = chofer(p.new.chofer_id);
+        toast(`⚠️ ${c ? c.nombre : 'Un chofer'} va a ${Math.round(p.new.velocidad)} km/h (máx. ${Math.round(p.new.limite)})`, true);
+        if ('Notification' in window && Notification.permission === 'granted' && document.hidden) new Notification('Exceso de velocidad', { body: `${c ? c.nombre : 'Un chofer'}: ${Math.round(p.new.velocidad)} km/h`, icon: 'icons/icon-192.png' });
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bloqueos' }, p => {
+        if (p.eventType === 'INSERT' && p.new.creado_por !== me.id) toast(`⛔ ${quien(p.new.creado_por)} marcó "${p.new.calle || 'una calle'}" como No puedo pasar`);
+        later();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'viajes' }, later)
+      .subscribe();
+  }
+  // "hace X min" y camiones sin datos se actualizan solos
+  setInterval(() => { if (me) { drawTrucks(); if (tab === 'vivo') renderLive(); } }, 30000);
+
+  // ---------- Entrar / salir ----------
+  let me = null;
+  async function start() {
+    const s = await N.sesion();
+    if (!s) { $('login').hidden = false; $('layout').hidden = true; return; }
+    let p = null;
+    try { p = await N.cargarPerfil(true); } catch (e) { /* abajo */ }
+    if (!p || p.rol !== 'dueno') {
+      await N.salir();
+      $('login-err').textContent = 'Este panel es solo para el dueño. Los choferes usan la app.'; $('login-err').hidden = false;
+      $('login').hidden = false; $('layout').hidden = true; return;
+    }
+    me = p;
+    $('who').textContent = p.nombre; $('b-logout').hidden = false;
+    $('login').hidden = true; $('layout').hidden = false; map.resize();
+    await loadAll(); subscribe();
+    if ('Notification' in window && Notification.permission === 'default') document.addEventListener('click', () => Notification.requestPermission().catch(() => {}), { once: true });
+  }
+  $('f-login').addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = e.target, btn = f.querySelector('[type=submit]'); btn.disabled = true; $('login-err').hidden = true;
+    try { await N.entrar(f.email.value, f.password.value); f.password.value = ''; await start(); }
+    catch (err) { $('login-err').textContent = err.message; $('login-err').hidden = false; }
+    finally { btn.disabled = false; }
+  });
+  $('b-logout').addEventListener('click', async () => {
+    if (channel) { sb.removeChannel(channel); channel = null; }
+    me = null; await N.salir(); location.reload();
+  });
+  start();
+})();

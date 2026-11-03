@@ -1,9 +1,15 @@
 /* Camiones AR — app para choferes.
    Mapa vectorial (MapLibre + OpenFreeMap), rutas para camión (openrouteservice), navegación con voz,
-   alerta de velocidad y "No puedo pasar" para esquivar calles que en la realidad no sirven. */
+   alerta de velocidad y "No puedo pasar" para esquivar calles que en la realidad no sirven.
+   Con la nube (nube.js) el chofer entra con usuario + PIN, recibe sus viajes, comparte las calles marcadas
+   y manda su ubicación al panel del dueño. La clave de rutas queda en el servidor. */
 (() => {
   'use strict';
-  const ORS = 'https://api.openrouteservice.org';
+  // openrouteservice ahora vive en api.heigit.org (HeiGIT dejó de usar api.openrouteservice.org)
+  const ORS_HOSTS = [['https://api.heigit.org', { directions: '/openrouteservice/v2/directions/driving-hgv/geojson', search: '/pelias/v1/search', reverse: '/pelias/v1/reverse' }],
+    ['https://api.openrouteservice.org', { directions: '/v2/directions/driving-hgv/geojson', search: '/geocode/search', reverse: '/geocode/reverse' }]];
+  const NUBE = window.Nube && window.Nube.configurada ? window.Nube : null;
+  const isUuid = v => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v || ''));
   const STYLE = 'https://tiles.openfreemap.org/styles/liberty';
   const $ = id => document.getElementById(id);
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -19,7 +25,8 @@
 
   // ---------- Configuración ----------
   const CFG = window.CAMIONES_CONFIG || {};
-  const key = () => (store.get('key', '') || CFG.orsKey || '').trim();
+  // Sin nube: la clave se guarda en el celular. Con nube: no se usa (está en el servidor).
+  const key = () => NUBE ? '' : (store.get('key', '') || CFG.orsKey || '').trim();
   let speedLimit = store.get('speedLimit', CFG.speedLimit || 80);
   const EXAMPLE_TRUCKS = [
     { id: 't1', name: 'Hi-Way con semi (ejemplo)', h: 4.1, w: 45, l: 20, wd: 2.6, e: 10.5, hz: true },
@@ -30,6 +37,9 @@
   const truck = () => trucks.find(t => t.id === truckId) || trucks[0];
   let avoids = store.get('avoids', []);   // [{lat, lon, label, at}]
   let favs = store.get('favs', []);       // [{label, lat, lon}]
+  let lugares = NUBE ? store.get('lugares', []) : [];   // lugares de la empresa
+  let viajes = NUBE ? store.get('viajes', []) : [];     // viajes asignados a este chofer
+  let viaje = null;                                     // viaje en curso (si se salió desde "Tus viajes")
 
   // ---------- Restricciones ----------
   const TYPES = {
@@ -100,6 +110,8 @@
   let handlersOn = false;
   function addLayers() {
     if (map.getSource('route')) return;
+    map.addSource('lugares', { type: 'geojson', data: EMPTY });
+    map.addLayer({ id: 'lugares', type: 'circle', source: 'lugares', paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 5, 15, 9], 'circle-color': cssVar('--dark'), 'circle-stroke-color': '#fff', 'circle-stroke-width': 3 } });
     map.addSource('avoid', { type: 'geojson', data: EMPTY });
     map.addLayer({ id: 'avoid', type: 'circle', source: 'avoid', paint: { 'circle-radius': 9, 'circle-color': cssVar('--warn'), 'circle-stroke-color': '#fff', 'circle-stroke-width': 3 } });
     map.addSource('connector', { type: 'geojson', data: EMPTY });
@@ -113,11 +125,12 @@
       'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.32, 13, 0.5, 17, 0.75] } });
     tuneStyle();
     if (route) map.getSource('route').setData({ type: 'Feature', geometry: route.geo, properties: {} });
-    drawAvoids(); refreshRestr();
+    drawAvoids(); drawLugares(); refreshRestr();
     if (handlersOn) return; handlersOn = true;
+    map.on('click', 'lugares', e => { if (mode !== 'home' && mode !== 'results') return; e.preventDefault(); const l = lugares.find(x => x.id === e.features[0].properties.id); if (l) lugarPopup(l); });
     map.on('click', 'restr', e => { e.preventDefault(); const r = rows[e.features[0].properties.i]; restrPopup(r); });
     map.on('click', 'route', e => { if (mode !== 'preview') return; e.preventDefault(); avoidPopup(e.lngLat); });
-    for (const l of ['restr', 'route']) {
+    for (const l of ['restr', 'route', 'lugares']) {
       map.on('mouseenter', l, () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', l, () => { map.getCanvas().style.cursor = ''; });
     }
@@ -200,6 +213,7 @@
     }
     me = { lat: c.latitude, lon: c.longitude, speed: speed || 0, heading: heading ?? (me && me.heading) ?? 0, at: now };
     lastFix = { lat: me.lat, lon: me.lon, at: now };
+    sendPos(c.accuracy);
     if (mode === 'nav') navTick(); else setTarget(me.lat, me.lon, me.heading || 0);
   }
 
@@ -248,7 +262,7 @@
 
   // ---------- Buscar destino ----------
   function needKey() {
-    if (key()) return false;
+    if (NUBE || key()) return false;
     showErr('Falta la clave de rutas. Tocá el menú ☰ (arriba a la izquierda) y pegala en "Clave de rutas".');
     return true;
   }
@@ -258,6 +272,32 @@
     if (!m) return null;
     const lat = +m[1], lon = +m[2];
     return lat < -21 && lat > -56 && lon < -53 && lon > -74 ? { lat, lon } : null;
+  }
+  // Pide algo al servicio de rutas: por la función del servidor (nube) o directo con la clave del celular.
+  async function ors(op, { body, params } = {}) {
+    if (NUBE) {
+      const r = await NUBE.funcion('rutas', { op, body, params });
+      if (r.status === 401) { showLogin(); throw new Error('Tenés que entrar de nuevo con tu usuario y PIN.'); }
+      return r;
+    }
+    let lastErr;
+    for (const [host, paths] of ORS_HOSTS) {
+      try {
+        let res;
+        if (op === 'directions') {
+          res = await fetch(host + paths.directions, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: key() }, body: JSON.stringify(body) });
+        } else {
+          const u = new URL(host + paths[op]);
+          for (const [k, v] of Object.entries(params || {})) u.searchParams.set(k, v);
+          u.searchParams.set('api_key', key());
+          res = await fetch(u);
+        }
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401 || res.status === 403) data.error = { ...(typeof data.error === 'object' ? data.error : {}), code: 'clave', message: 'La clave de rutas no es válida. Revisala en el menú ☰.' };
+        return { ok: res.ok, status: res.status, data };
+      } catch (e) { lastErr = e; } // sin respuesta de este servidor: probar el siguiente
+    }
+    throw lastErr;
   }
   async function photon(text, c) {
     const u = `https://photon.komoot.io/api/?q=${encodeURIComponent(text)}&limit=8&lat=${c.lat}&lon=${c.lng}&bbox=-73.6,-55.1,-53.6,-21.7`;
@@ -270,9 +310,9 @@
     }).filter(x => x.label);
   }
   async function orsSearch(text, c) {
-    const res = await fetch(`${ORS}/geocode/search?api_key=${encodeURIComponent(key())}&text=${encodeURIComponent(text)}&boundary.country=AR&size=6&focus.point.lat=${c.lat}&focus.point.lon=${c.lng}`);
-    if (!res.ok) { const e = new Error(res.status === 401 || res.status === 403 ? 'La clave de rutas no es válida. Revisala en el menú ☰.' : 'El buscador no respondió.'); throw e; }
-    const d = await res.json();
+    const res = await ors('search', { params: { text, 'boundary.country': 'AR', size: 6, 'focus.point.lat': c.lat, 'focus.point.lon': c.lng } });
+    if (!res.ok) throw new Error(res.data.error && res.data.error.code === 'clave' ? res.data.error.message : 'El buscador no respondió.');
+    const d = res.data;
     return d.features.map(f => ({ label: f.properties.label.replace(/, Argentina$/, ''), lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0], hn: !!f.properties.housenumber }));
   }
   async function geocode(text) {
@@ -281,9 +321,9 @@
     if (xy) return [{ label: 'Ubicación pegada', ...xy }];
     const c = me ? { lat: me.lat, lng: me.lon } : map.getCenter();
     const [a, b] = await Promise.allSettled([photon(text, c), orsSearch(text, c)]);
-    if (a.status === 'rejected' && b.status === 'rejected') throw b.reason;
+    if (a.status === 'rejected' && b.status === 'rejected' && !(NUBE && lugaresQueCoinciden(text).length)) throw b.reason;
     const out = [];
-    for (const r of [...(a.value || []), ...(b.value || [])]) {
+    for (const r of [...(NUBE ? lugaresQueCoinciden(text) : []), ...(a.value || []), ...(b.value || [])]) {
       if (out.some(o => dist([o.lat, o.lon], [r.lat, r.lon]) < 60)) continue;
       out.push(r);
     }
@@ -292,7 +332,7 @@
   }
   async function reverse(lat, lon) {
     try {
-      const d = await (await fetch(`${ORS}/geocode/reverse?api_key=${encodeURIComponent(key())}&point.lat=${lat}&point.lon=${lon}&size=1&boundary.country=AR`)).json();
+      const d = (await ors('reverse', { params: { 'point.lat': lat, 'point.lon': lon, size: 1, 'boundary.country': 'AR' } })).data;
       return d.features[0].properties.label.replace(/, Argentina$/, '');
     } catch (e) { return 'Punto en el mapa'; }
   }
@@ -309,7 +349,7 @@
       for (const p of res) {
         const [first, ...rest] = p.label.split(', ');
         const b = document.createElement('button'); b.type = 'button'; b.className = 'item';
-        b.innerHTML = `<span class="ico">📍</span><span><span class="t">${esc(first)}</span><br><span class="m">${esc(rest.join(', '))}</span></span><span></span>`;
+        b.innerHTML = `<span class="ico">${p.own ? '🏠' : '📍'}</span><span><span class="t">${esc(first)}</span><br><span class="m">${esc(rest.join(', '))}</span></span><span></span>`;
         b.addEventListener('click', () => goTo(p));
         box.appendChild(b);
       }
@@ -319,6 +359,8 @@
 
   function renderFavs() {
     const box = $('favs'); box.textContent = '';
+    renderCloudLists(box);
+    if (NUBE && favs.length) { const h = document.createElement('h3'); h.className = 'list-title'; h.textContent = 'Guardados'; box.appendChild(h); }
     for (const [i, f] of favs.entries()) {
       const b = document.createElement('div'); b.className = 'item'; b.setAttribute('role', 'button'); b.tabIndex = 0;
       b.innerHTML = `<span class="ico">★</span><span><span class="t">${esc(f.label.split(', ')[0])}</span><br><span class="m">${esc(f.label.split(', ').slice(1).join(', '))}</span></span><button type="button" class="x" aria-label="Borrar">✕</button>`;
@@ -401,12 +443,12 @@
       options: { vehicle_type: 'hgv', profile_params: { restrictions: { height: T.h, weight: T.w, length: T.l, width: T.wd, axleload: T.e, hazmat: !!T.hz } } },
     };
     const av = polygonsFor(pts || []); if (av) body.options.avoid_polygons = av;
-    const res = await fetch(`${ORS}/v2/directions/driving-hgv/geojson`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: key() }, body: JSON.stringify(body) });
-    const d = await res.json().catch(() => ({}));
+    const res = await ors('directions', { body });
+    const d = res.data || {};
     if (!res.ok) {
       const code = d.error && d.error.code;
       const e = new Error('El servicio de rutas no respondió. Probá de nuevo en un rato.'); e.code = code;
-      if (res.status === 401 || res.status === 403) e.message = 'La clave de rutas no es válida. Revisala en el menú ☰.';
+      if (code === 'clave') e.message = d.error.message;
       else if (code === 2004) e.message = 'too-long';
       else if (code === 2010) e.message = 'No hay una calle para camión cerca del punto de salida o de llegada.';
       else if (code === 2009 || code === 2099) e.message = 'No encontré una ruta posible para este camión. Probá con otro destino o revisá las calles evitadas.';
@@ -517,7 +559,8 @@
   map.on('dragstart', () => { if (mode === 'nav') { anim.follow = false; $('b-center').hidden = false; } });
   $('b-center').addEventListener('click', () => { anim.follow = true; $('b-center').hidden = true; if (!anim.raf) anim.raf = requestAnimationFrame(frame); });
 
-  async function goTo(place) {
+  async function goTo(place, keepTrip) {
+    if (!keepTrip) viaje = null;
     showErr('');
     if (needKey()) return;
     setMode('loading'); $('loading-text').textContent = 'Armando la ruta para tu camión…';
@@ -569,8 +612,23 @@
     });
   }
   function addAvoid(lat, lon, label) {
-    avoids.push({ lat: +lat.toFixed(6), lon: +lon.toFixed(6), label, at: new Date().toISOString().slice(0, 10) });
+    avoids.push({ lat: +lat.toFixed(6), lon: +lon.toFixed(6), label, at: new Date().toISOString().slice(0, 10), mine: true, pending: !!NUBE });
     store.set('avoids', avoids); drawAvoids();
+    if (NUBE) flushAvoids();
+  }
+  // Con nube: las calles marcadas se suben y las ven todos los choferes. Sin señal quedan en espera.
+  let flushing = false;
+  async function flushAvoids() {
+    if (!NUBE || flushing || !session) return;
+    flushing = true;
+    try {
+      for (const a of avoids.filter(x => x.pending)) {
+        const { data, error } = await NUBE.sb.from('bloqueos').insert({ lat: a.lat, lon: a.lon, calle: a.label, creado_por: session.user.id }).select('id').single();
+        if (error) break;
+        a.id = data.id; a.pending = false;
+      }
+      store.set('avoids', avoids);
+    } finally { flushing = false; }
   }
   function drawAvoids() {
     if (!map.getSource('avoid')) return;
@@ -606,6 +664,8 @@
     setMode('nav'); requestWake(); startWatch();
     map.setPadding({ top: Math.round(innerHeight * 0.42), bottom: 100, left: 0, right: 0 });
     saveTrip(); downloadCorridor(route);
+    if (viaje && viaje.estado === 'pendiente') setTripState(viaje, 'en_curso');
+    lastPos.at = 0; sendPos();
     speak('Vamos. ' + (route.steps[0] ? route.steps[0].text : ''));
     navTick();
   });
@@ -613,6 +673,9 @@
     try { nav.wake && nav.wake.release(); } catch (e) { /* nada */ }
     try { speechSynthesis.cancel(); } catch (e) { /* nada */ }
     store.set('trip', null);
+    // Si terminó cerca del destino, el viaje queda como terminado
+    if (viaje && route && me && dist([me.lat, me.lon], [route.to.lat, route.to.lon]) < 300) setTripState(viaje, 'terminado');
+    viaje = null;
     clearRoute(); setMode('home');
   });
 
@@ -660,6 +723,7 @@
     if (Date.now() - nav.overSince > 3000 && Date.now() - nav.lastSpeedWarn > 20000) {
       nav.lastSpeedWarn = Date.now();
       beep(); showAlert(`¡Bajá la velocidad! Máximo ${speedLimit} km/h`);
+      sendSpeedAlert(v);
       setTimeout(() => speak(`Bajá la velocidad. Vas a ${v}. El máximo es ${speedLimit}.`), 800);
     }
   }
@@ -705,7 +769,7 @@
 
     if (left < 30) {
       $('turn-arrow').innerHTML = arrowSVG(10); $('turn-dist').textContent = ''; $('turn-text').textContent = 'Llegaste a destino';
-      if (!nav.spoken.end) { nav.spoken.end = 1; speak('Llegaste a destino.'); }
+      if (!nav.spoken.end) { nav.spoken.end = 1; speak('Llegaste a destino.'); if (viaje) setTripState(viaje, 'terminado'); }
       return;
     }
     let si = route.steps.findIndex(s => s.way_points[0] > bi);
@@ -730,6 +794,14 @@
   // ---------- Ajustes ----------
   function renderTrucks() {
     const box = $('trucks'); box.textContent = '';
+    if (NUBE) { // los camiones los carga el dueño: acá solo se muestran
+      for (const T of trucks) {
+        const d = document.createElement('div'); d.className = 'item';
+        d.innerHTML = `<span class="ico">${T.id === truckId ? '✔' : '🚚'}</span><span><span class="t">${esc(T.name)}</span><br><span class="m">${fmt(T.h)} m alto · ${fmt(T.w)} t · ${fmt(T.l)} m largo · ${fmt(T.wd)} m ancho · ${fmt(T.e)} t por eje${T.hz ? ' · carga peligrosa' : ''}</span></span><span></span>`;
+        box.appendChild(d);
+      }
+      return;
+    }
     trucks.forEach((T, i) => {
       const d = document.createElement('div'); d.className = 'tcard';
       d.innerHTML = `<label class="name">Nombre o patente<input type="text" data-k="name" value="${esc(T.name)}"></label>
@@ -759,19 +831,208 @@
     if (!avoids.length) { box.innerHTML = '<p class="tip">Todavía no hay calles evitadas.</p>'; return; }
     avoids.forEach((a, i) => {
       const d = document.createElement('div'); d.className = 'item';
-      d.innerHTML = `<span class="ico">⛔</span><span><span class="t">${esc(a.label)}</span><br><span class="m">${a.at} · ${a.lat.toFixed(5)}, ${a.lon.toFixed(5)}</span></span><button type="button" class="x" aria-label="Borrar">✕</button>`;
-      d.querySelector('.x').addEventListener('click', () => { avoids.splice(i, 1); store.set('avoids', avoids); drawAvoids(); renderAvoids(); });
+      const canDel = !NUBE || a.mine || (prof && prof.rol === 'dueno');
+      const who = a.pending ? ' · sin subir todavía' : a.by ? ' · ' + a.by : '';
+      d.innerHTML = `<span class="ico">⛔</span><span><span class="t">${esc(a.label || 'Calle sin nombre')}</span><br><span class="m">${esc(a.at)}${esc(who)}</span></span>${canDel ? '<button type="button" class="x" aria-label="Sacar">✕</button>' : '<span></span>'}`;
+      d.addEventListener('click', ev => { if (ev.target.closest('.x')) return; $('settings').close(); focusPoint(a.lon, a.lat); });
+      if (canDel) d.querySelector('.x').addEventListener('click', async () => {
+        if (NUBE && a.id) {
+          const { error } = await NUBE.sb.from('bloqueos').delete().eq('id', a.id);
+          if (error) { showErr('No se pudo sacar (¿hay señal?).'); return; }
+        }
+        avoids.splice(i, 1); store.set('avoids', avoids); drawAvoids(); renderAvoids();
+      });
       box.appendChild(d);
     });
   }
   $('b-menu').addEventListener('click', () => {
+    if (NUBE) {
+      $('sec-account').hidden = false; $('sec-key').hidden = true; $('b-add-truck').hidden = true;
+      $('acc-name').textContent = prof ? `${prof.nombre}${prof.usuario ? ' (' + prof.usuario + ')' : ''}` : 'Sin conexión';
+      $('b-panel').hidden = !(prof && prof.rol === 'dueno');
+      $('s-speed').disabled = true; $('speed-note').textContent = 'km/h. La pone el dueño en el panel. Avisa con sonido y voz si el camión la pasa.';
+      $('trucks-note').hidden = false;
+    }
     renderTrucks(); renderAvoids();
     $('s-speed').value = speedLimit; $('s-key').value = store.get('key', '') ? '••••••••' : ''; $('s-restr').checked = store.get('showAll', false);
     $('settings').showModal();
   });
+  if (NUBE) {
+    $('b-logout').addEventListener('click', async () => {
+      if (!confirm('¿Salir de la cuenta? Para volver a entrar vas a necesitar tu usuario y PIN.')) return;
+      $('settings').close(); store.set('trip', null); await NUBE.salir();
+    });
+  }
   $('s-speed').addEventListener('change', () => { const v = parseInt($('s-speed').value, 10); if (v >= 40 && v <= 130) { speedLimit = v; store.set('speedLimit', v); } });
   for (const ev of ['change', 'input']) $('s-key').addEventListener(ev, () => { const v = $('s-key').value.trim(); if (v.length > 20 && !/^•+$/.test(v)) { store.set('key', v); showErr(''); } });
 
+
+  // ---------- Nube: cuenta del chofer, viajes, lugares, calles marcadas y ubicación en vivo ----------
+  let session = null, prof = null, channel = null;
+  function showLogin() {
+    if (!NUBE) return;
+    const d = $('login'); if (d.open) return;
+    $('l-err').hidden = true; $('l-pin').value = '';
+    d.showModal(); setTimeout(() => $('l-user').focus(), 50);
+  }
+  if (NUBE) {
+    $('login').addEventListener('cancel', e => e.preventDefault()); // no se puede cerrar sin entrar
+    $('l-user').value = store.get('lastUser', '');
+    $('f-login').addEventListener('submit', async e => {
+      e.preventDefault();
+      const u = $('l-user').value.trim(), pin = $('l-pin').value.trim();
+      if (!u || !pin) return;
+      $('l-go').disabled = true; $('l-go').textContent = 'Entrando…'; $('l-err').hidden = true;
+      try {
+        await NUBE.entrar(u, pin);
+        store.set('lastUser', u);
+        $('login').close();
+        await startCloud();
+      } catch (err) { $('l-err').textContent = err.message; $('l-err').hidden = false; }
+      finally { $('l-go').disabled = false; $('l-go').textContent = 'Entrar'; }
+    });
+    NUBE.sb.auth.onAuthStateChange((ev, s) => {
+      session = s || null;
+      if (ev === 'SIGNED_OUT') { prof = null; if (channel) { NUBE.sb.removeChannel(channel); channel = null; } showLogin(); }
+      else if (ev === 'SIGNED_IN' || ev === 'TOKEN_REFRESHED') flushAvoids();
+    });
+    window.addEventListener('online', () => { flushAvoids(); loadCloud(); });
+  }
+
+  async function startCloud() {
+    session = await NUBE.sesion();
+    if (!session) { showLogin(); return; }
+    try { prof = await NUBE.cargarPerfil(); } catch (e) { prof = store.get('perfil', null); }
+    if (!prof && navigator.onLine) { await NUBE.salir(); showLogin(); return; }
+    await loadCloud();
+    subscribe();
+    flushAvoids();
+  }
+
+  const lugarIco = t => ({ base: '🏠', deposito: '📦', cliente: '🏭' }[t] || '📍');
+  async function loadCloud() {
+    if (!NUBE || !session) return;
+    const uid = session.user.id;
+    const [cam, lug, aj, blo, via] = await Promise.all([
+      NUBE.sb.from('camiones').select('*').eq('activo', true).order('nombre'),
+      NUBE.sb.from('lugares').select('*').order('nombre'),
+      NUBE.sb.from('ajustes').select('velocidad_max').eq('id', 1).maybeSingle(),
+      NUBE.sb.from('bloqueos').select('id, lat, lon, calle, creado, creado_por').eq('activo', true).order('creado', { ascending: false }),
+      NUBE.sb.from('viajes').select('*').eq('chofer_id', uid).in('estado', ['pendiente', 'en_curso']).order('fecha').order('creado'),
+    ]);
+    if (!cam.error && cam.data.length) {
+      trucks = cam.data.map(NUBE.camionApp); store.set('trucks', trucks);
+      if (!trucks.some(t => t.id === truckId)) { truckId = (prof && trucks.some(t => t.id === prof.camion_id)) ? prof.camion_id : trucks[0].id; store.set('truckId', truckId); }
+      renderTruckChip(); refreshRestr();
+    }
+    if (!lug.error) { lugares = lug.data; store.set('lugares', lugares); drawLugares(); }
+    if (!aj.error && aj.data) { speedLimit = aj.data.velocidad_max; store.set('speedLimit', speedLimit); }
+    if (!blo.error) {
+      const pending = avoids.filter(a => a.pending);
+      avoids = blo.data.map(b => ({ id: b.id, lat: b.lat, lon: b.lon, label: b.calle || 'Calle sin nombre', at: b.creado.slice(0, 10), mine: b.creado_por === uid })).concat(pending);
+      store.set('avoids', avoids); drawAvoids();
+    }
+    if (!via.error) { viajes = via.data; store.set('viajes', viajes); }
+    if (mode === 'home') renderFavs();
+  }
+
+  // Cambios en vivo: calles marcadas por otros choferes, viajes nuevos, ajustes del dueño
+  let reloadT = 0;
+  function subscribe() {
+    if (channel) return;
+    const later = () => { clearTimeout(reloadT); reloadT = setTimeout(loadCloud, 600); };
+    channel = NUBE.sb.channel('chofer-' + session.user.id)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bloqueos' }, p => {
+        if (p.eventType === 'INSERT' && p.new.creado_por !== session.user.id && mode === 'nav') showAlert(`Otro chofer marcó: ${p.new.calle || 'una calle'} — No se puede pasar`, 'orange');
+        later();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'viajes', filter: `chofer_id=eq.${session.user.id}` }, p => {
+        if (p.eventType === 'INSERT') { beep(); showAlert('Tenés un viaje nuevo', 'orange'); speak('Tenés un viaje nuevo.'); }
+        later();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ajustes' }, later)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'camiones' }, later)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'lugares' }, later)
+      .subscribe();
+  }
+
+  // Ubicación en vivo para el panel del dueño (cada 15 s o cada 150 m; en viaje, cada 5 s)
+  const lastPos = { at: 0, lat: 0, lon: 0, busy: false };
+  async function sendPos(acc) {
+    if (!NUBE || !session || !prof || !me || lastPos.busy) return;
+    const now = Date.now(), moved = dist([lastPos.lat, lastPos.lon], [me.lat, me.lon]);
+    if (now - lastPos.at < (mode === 'nav' ? 5000 : 15000) && moved < 150) return;
+    lastPos.busy = true;
+    try {
+      const { error } = await NUBE.sb.from('posiciones').upsert({
+        chofer_id: session.user.id, camion_id: isUuid(truckId) ? truckId : null, viaje_id: viaje ? viaje.id : null,
+        lat: +me.lat.toFixed(6), lon: +me.lon.toFixed(6), velocidad: Math.round(me.speed || 0), rumbo: Math.round(me.heading || 0),
+        precision_m: Number.isFinite(acc) ? Math.round(acc) : null, at: new Date().toISOString(),
+      }, { onConflict: 'chofer_id' });
+      if (!error) Object.assign(lastPos, { at: now, lat: me.lat, lon: me.lon });
+    } catch (e) { /* sin señal: se manda en la próxima */ }
+    finally { lastPos.busy = false; }
+  }
+  function sendSpeedAlert(v) {
+    if (!NUBE || !session || !me) return;
+    NUBE.sb.from('alertas').insert({ chofer_id: session.user.id, camion_id: isUuid(truckId) ? truckId : null, viaje_id: viaje ? viaje.id : null,
+      velocidad: v, limite: speedLimit, lat: +me.lat.toFixed(6), lon: +me.lon.toFixed(6) }).then(() => {}, () => {});
+  }
+  async function setTripState(v, estado) {
+    if (!NUBE || !v || v.estado === estado || v.estado === 'terminado') return;
+    v.estado = estado; store.set('viajes', viajes);
+    try { await NUBE.sb.rpc('cambiar_estado_viaje', { p_viaje: v.id, p_estado: estado }); } catch (e) { /* se reintenta al recargar */ }
+    if (estado === 'terminado') { viajes = viajes.filter(x => x.id !== v.id); store.set('viajes', viajes); }
+  }
+
+  // Viajes asignados y lugares de la empresa, arriba de los favoritos
+  const fechaCorta = f => { const d = new Date(f + 'T12:00:00'); const hoy = new Date(); const man = new Date(Date.now() + 864e5);
+    return d.toDateString() === hoy.toDateString() ? 'Hoy' : d.toDateString() === man.toDateString() ? 'Mañana' : d.toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'numeric' }); };
+  function renderCloudLists(box) {
+    if (!NUBE) return;
+    const byId = id => lugares.find(l => l.id === id);
+    if (viajes.length) {
+      const h = document.createElement('h3'); h.className = 'list-title'; h.textContent = 'Tus viajes'; box.appendChild(h);
+      for (const v of viajes) {
+        const dest = byId(v.destino_id), orig = byId(v.origen_id), T = trucks.find(t => t.id === v.camion_id);
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'item trip' + (v.estado === 'en_curso' ? ' resume' : '');
+        const sub = [fechaCorta(v.fecha), orig ? 'desde ' + orig.nombre : '', T ? T.name : '', v.notas].filter(Boolean).join(' · ');
+        b.innerHTML = `<span class="ico">${v.estado === 'en_curso' ? '▶' : '🚚'}</span><span><span class="t">${esc(dest ? dest.nombre : 'Destino borrado')}</span><br><span class="m">${esc(sub)}</span></span><span class="tag">${v.estado === 'en_curso' ? 'En curso' : 'Ir'}</span>`;
+        b.addEventListener('click', () => {
+          if (!dest) { showErr('El destino de este viaje ya no existe. Avisale al dueño.'); return; }
+          if (v.camion_id && trucks.some(t => t.id === v.camion_id) && truckId !== v.camion_id) { truckId = v.camion_id; store.set('truckId', truckId); renderTruckChip(); }
+          viaje = v;
+          goTo({ label: dest.nombre, lat: dest.lat, lon: dest.lon }, true);
+        });
+        box.appendChild(b);
+      }
+    }
+    if (lugares.length) {
+      const det = document.createElement('details'); det.className = 'places';
+      det.innerHTML = `<summary>Lugares de la empresa (${lugares.length})</summary>`;
+      const list = document.createElement('div'); list.className = 'list';
+      for (const l of lugares) {
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'item';
+        b.innerHTML = `<span class="ico">${lugarIco(l.tipo)}</span><span><span class="t">${esc(l.nombre)}</span><br><span class="m">${esc([l.direccion, l.notas].filter(Boolean).join(' · '))}</span></span><span></span>`;
+        b.addEventListener('click', () => goTo({ label: l.nombre, lat: l.lat, lon: l.lon }));
+        list.appendChild(b);
+      }
+      det.appendChild(list); box.appendChild(det);
+    }
+  }
+  function drawLugares() {
+    const src = map.getSource && map.getSource('lugares'); if (!src) return;
+    src.setData({ type: 'FeatureCollection', features: lugares.map(l => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [l.lon, l.lat] }, properties: { id: l.id } })) });
+  }
+  function lugarPopup(l) {
+    const div = document.createElement('div');
+    div.innerHTML = `<p style="margin:0"><b>${lugarIco(l.tipo)} ${esc(l.nombre)}</b></p>${l.notas ? `<p class="m" style="margin:4px 0 0">${esc(l.notas)}</p>` : ''}<div class="pop-actions"><button type="button" class="big go">Ir acá</button></div>`;
+    const pop = new maplibregl.Popup().setLngLat([l.lon, l.lat]).setDOMContent(div).addTo(map);
+    div.querySelector('button').addEventListener('click', () => { pop.remove(); goTo({ label: l.nombre, lat: l.lat, lon: l.lon }); });
+  }
+  const norm = t => String(t).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const lugaresQueCoinciden = text => { const q = norm(text); return lugares.filter(l => norm(l.nombre).includes(q) || (l.direccion && norm(l.direccion).includes(q)))
+    .map(l => ({ label: `${l.nombre}${l.direccion ? ', ' + l.direccion : ''}`, lat: l.lat, lon: l.lon, poi: true, own: true })); };
 
   // ---------- Instalar ----------
   let installEvt = null;
@@ -877,7 +1138,7 @@
   }
   function saveTrip() {
     if (!route) return;
-    store.set('trip', { at: Date.now(), from: route.from, to: route.to, coords: route.coords, steps: route.steps, time: route.time });
+    store.set('trip', { at: Date.now(), from: route.from, to: route.to, coords: route.coords, steps: route.steps, time: route.time, viaje: viaje && viaje.id });
   }
   function restoreTrip() {
     const t = store.get('trip', null);
@@ -890,6 +1151,7 @@
       route = { from: t.from, to: t.to, coords: t.coords, cum, steps: t.steps, total: cum[cum.length - 1], time: t.time,
         geo: { type: 'LineString', coordinates: t.coords.map(([la, lo]) => [lo, la]) } };
       route.near = nearRoute(route, 25);
+      viaje = t.viaje ? viajes.find(v => v.id === t.viaje) || null : null;
       drawRoute(route);
       $('b-go').click();
     });
@@ -898,6 +1160,7 @@
 
   // ---------- Arranque ----------
   renderTruckChip(); setMode('home');
+  if (NUBE) startCloud().catch(() => showLogin());
   Promise.all([
     fetch('data/restricciones.json').then(r => r.json()),
     fetch('data/propias.json').then(r => r.json()).catch(() => []),

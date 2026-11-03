@@ -1,4 +1,5 @@
 // Copiá este archivo como config.js para que la app venga configurada (config.js no se sube al repositorio).
+// Con la nube (nube-config.js) la clave de rutas va en el servidor y orsKey queda vacío.
 window.CAMIONES_CONFIG = {
   orsKey: '',        // clave de OpenRouteService
   speedLimit: 80,    // km/h

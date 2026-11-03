@@ -170,3 +170,20 @@ dialog::backdrop { background: rgb(0 0 0 / .45); }
 
 .center-btn { position: fixed; z-index: 6; right: max(12px, env(safe-area-inset-right)); bottom: calc(118px + env(safe-area-inset-bottom)); border: 0; border-radius: 999px; background: var(--route); color: #fff; font: 700 1.1rem var(--font-body); padding: 14px 20px; box-shadow: 0 4px 14px rgb(0 0 0 / .3); }
 body:not([data-mode="nav"]) .center-btn { display: none; }
+
+/* Cuenta y nube */
+.list-title { margin: 4px 0 0; font: 700 1.05rem var(--font-display); text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.item .tag { font: 700 .95rem var(--font-body); background: var(--go); color: #fff; border-radius: 999px; padding: 6px 12px; white-space: nowrap; }
+.item.trip:not(.resume) .tag { background: var(--dark); }
+.places summary { cursor: pointer; font-weight: 700; padding: 12px 4px; color: var(--ink); }
+.places .list { margin-top: 4px; }
+.acc { margin: 0; font-weight: 700; font-size: 1.1rem; overflow-wrap: anywhere; }
+.linkbtn { display: flex; align-items: center; justify-content: center; text-decoration: none; color: var(--ink); }
+.login { width: min(420px, 94vw); }
+.login::backdrop { background: var(--dark); }
+.login-head { display: flex; align-items: center; gap: 12px; }
+.login-head img { border-radius: 14px; }
+.login-head h2 { margin: 0; font: 700 2.2rem/1 var(--font-display); }
+.field { display: flex; flex-direction: column; gap: 6px; font-weight: 700; color: var(--muted); }
+.field input { font: 700 1.4rem var(--font-body); color: var(--ink); background: var(--bg); border: 2px solid var(--line); border-radius: 14px; padding: 14px 16px; width: 100%; }
+.big:disabled { opacity: .6; }
