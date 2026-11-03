@@ -112,3 +112,12 @@ body.picking .maplibregl-canvas { cursor: crosshair; }
 .toast { position: fixed; z-index: 10; left: 50%; top: 70px; transform: translateX(-50%); width: min(92vw, 460px); background: var(--go); color: #fff; border-radius: 14px; padding: 12px 16px; font-weight: 700; text-align: center; box-shadow: 0 6px 20px rgb(0 0 0 / .3); }
 .toast.red { background: #c8102e; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+
+/* Rastreador satelital */
+.truck.sat .dot { background: #7a3db8; }
+.truck.sat .lbl { background: #3b1f5c; }
+.okmsg { margin: 0 0 8px; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--go) 15%, transparent); }
+.err .m, .okmsg .m { color: var(--muted); font-weight: 500; font-size: .85rem; }
+#sitrack .err { margin-bottom: 8px; }
+.truck.sat.over .dot { background: #c8102e; }
+.truck.sat.stale .dot { background: #8a9593; }
