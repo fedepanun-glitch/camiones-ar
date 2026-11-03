@@ -16,7 +16,8 @@
   // ---------- Datos ----------
   const D = { choferes: [], camiones: [], lugares: [], viajes: [], posiciones: [], alertas: [], bloqueos: [], rastreo: [], sitrack: null, ajustes: { velocidad_max: 80 } };
   const byId = (arr, id) => arr.find(x => x.id === id);
-  const chofer = id => byId(D.choferes, id);
+  // El dueño también puede manejar o probar la app: aparece como "Yo" en la lista de choferes
+  const chofer = id => byId(D.choferes, id) || (me && me.id === id ? { ...me, nombre: `${me.nombre} (yo)` } : null);
   const camion = id => byId(D.camiones, id);
   const lugar = id => byId(D.lugares, id);
   // Direcciones de un solo viaje (no guardadas en Lugares): existen para el viaje pero no se listan
@@ -219,7 +220,7 @@
     const lugLabel = l => `${(TIPO[l.tipo] || TIPO.otro)[0]} ${l.nombre}`;
     const camActivos = D.camiones.filter(c => c.activo);
     for (const [sel, html] of [
-      [fv.chofer_id, opts(D.choferes, c => c.nombre, D.choferes.length ? 'Elegí el chofer' : 'Primero creá un chofer')],
+      [fv.chofer_id, opts(D.choferes, c => c.nombre, 'Elegí el chofer') + (me ? `<option value="${esc(me.id)}">Yo (${esc(me.nombre)})</option>` : '')],
       [fv.camion_id, opts(camActivos, c => c.nombre, 'El que tenga el chofer')],
       [fv.origen_id, opts(guardados(), lugLabel, 'Donde esté el camión') + NUEVO_OPT],
       [fv.destino_id, opts(guardados(), lugLabel, 'Elegí el destino') + NUEVO_OPT],
