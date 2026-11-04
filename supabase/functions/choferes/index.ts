@@ -52,12 +52,13 @@ Deno.serve(async req => {
       return json({ ok: true, id: data.user.id });
     }
     const aid = String(m.id ?? '');
-    const { data: ad } = await admin.from('perfiles').select('rol').eq('id', aid).maybeSingle();
+    const { data: ad } = await admin.from('perfiles').select('rol, usuario, email').eq('id', aid).maybeSingle();
     if (ad?.rol !== 'admin') return fail('Administrador no encontrado.', 404);
     if (m.accion === 'clave_admin') {
       const clave = String(m.clave ?? '');
       if (clave.length < 8) return fail('La contraseña tiene que tener al menos 8 caracteres.');
-      const { error } = await admin.auth.admin.updateUserById(aid, { password: clave });
+      // Los que entran con usuario (sin email) usan la misma clave interna que los choferes
+      const { error } = await admin.auth.admin.updateUserById(aid, { password: ad.usuario && !ad.email ? claveDe(clave) : clave });
       if (error) return fail(error.message, 500);
       await admin.rpc('cerrar_sesiones', { p_user: aid });
       return json({ ok: true });
