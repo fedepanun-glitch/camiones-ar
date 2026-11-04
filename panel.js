@@ -650,7 +650,7 @@
   function renderAdmins() {
     const box = $('admins'); if (!box) return;
     const soyDueno = me && me.rol === 'dueno';
-    box.innerHTML = D.admins.map(a => `<div class="row stack"><span class="ico">${a.rol === 'dueno' ? '👑' : '🧑‍💼'}</span><span><span class="t">${esc(a.nombre)}${me && a.id === me.id ? ' (vos)' : ''}</span><br><span class="m">${a.rol === 'dueno' ? 'Dueño' : 'Administrador'}${a.email ? ' · ' + esc(a.email) : ''}</span></span>
+    box.innerHTML = D.admins.map(a => `<div class="row stack"><span class="ico">${a.rol === 'dueno' ? '👑' : '🧑‍💼'}</span><span><span class="t">${esc(a.nombre)}${me && a.id === me.id ? ' (vos)' : ''}</span><br><span class="m">${a.rol === 'dueno' ? 'Dueño' : 'Administrador'}${a.email ? ' · ' + esc(a.email) : a.usuario ? ' · usuario ' + esc(a.usuario) : ''}</span></span>
       <span class="acts">${soyDueno && a.rol === 'admin' ? `<button type="button" class="btn ghost sm" data-aclave="${a.id}">Nueva contraseña</button><button type="button" class="btn danger sm" data-adel="${a.id}">Borrar</button>` : ''}</span></div>`).join('');
   }
   $('admins').addEventListener('click', async e => {
