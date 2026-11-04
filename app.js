@@ -679,6 +679,7 @@
     try { nav.wake && nav.wake.release(); } catch (e) { /* nada */ }
     try { speechSynthesis.cancel(); } catch (e) { /* nada */ }
     store.set('trip', null);
+    if (NUBE) closeEpisode(true);     // si venía pasado de velocidad, se cierra ese tramo
     if (viaje && terminado) setTripState(viaje, 'terminado');
     viaje = null; shareRoute(null);
     clearRoute(); setMode('home');
@@ -736,12 +737,12 @@
     $('speed-n').textContent = v;
     const over = v > speedLimit;
     $('speed').classList.toggle('over', over);
-    if (!over) { nav.overSince = 0; return; }
+    if (!over) { nav.overSince = 0; speedEpisode(v, false); return; }
     if (!nav.overSince) nav.overSince = Date.now();
+    if (Date.now() - nav.overSince > 3000) speedEpisode(v, true);   // al dueño le llega una alerta por tramo
     if (Date.now() - nav.overSince > 3000 && Date.now() - nav.lastSpeedWarn > 20000) {
       nav.lastSpeedWarn = Date.now();
       beep(); showAlert(`¡Bajá la velocidad! Máximo ${speedLimit} km/h`);
-      sendSpeedAlert(v);
       setTimeout(() => speak(`Bajá la velocidad. Vas a ${v}. El máximo es ${speedLimit}.`), 800);
     }
   }
@@ -1055,10 +1056,30 @@
       if (rt && viaje) await NUBE.sb.rpc('guardar_ruta_viaje', { p_viaje: viaje.id, p_ruta: geo, p_km: +(rt.total / 1000).toFixed(1), p_min: Math.round(rt.time / 60) });
     } catch (e) { /* sin señal: se manda en el próximo recálculo */ }
   }
-  function sendSpeedAlert(v) {
+  // Una alerta por tramo de exceso: se crea al pasarse, se actualiza la máxima cada 30 s
+  // y se cierra cuando vuelve a ir bien durante 15 s. El chofer igual escucha la alarma cada 20 s.
+  const ep = { id: null, pending: false, max: 0, upd: 0, below: 0, maxPos: null };
+  function speedEpisode(v, over) {
     if (!NUBE || !session || !me) return;
-    NUBE.sb.from('alertas').insert({ chofer_id: session.user.id, camion_id: isUuid(truckId) ? truckId : null, viaje_id: viaje ? viaje.id : null,
-      velocidad: v, limite: speedLimit, lat: +me.lat.toFixed(6), lon: +me.lon.toFixed(6) }).then(() => {}, () => {});
+    const now = Date.now();
+    if (over) {
+      ep.below = 0;
+      if (v >= ep.max) { ep.max = v; ep.maxPos = { lat: +me.lat.toFixed(6), lon: +me.lon.toFixed(6) }; }
+      if (!ep.id && !ep.pending) {
+        ep.pending = true; ep.upd = now;
+        NUBE.sb.from('alertas').insert({ chofer_id: session.user.id, camion_id: isUuid(truckId) ? truckId : null, viaje_id: viaje ? viaje.id : null,
+          velocidad: v, limite: speedLimit, ...ep.maxPos, fin: new Date().toISOString() }).select('id').single()
+          .then(({ data }) => { ep.id = data ? data.id : null; ep.pending = false; }, () => { ep.pending = false; });
+      } else if (ep.id && now - ep.upd > 30000) { ep.upd = now; closeEpisode(false); }
+    } else if (ep.id) {
+      if (!ep.below) ep.below = now;
+      if (now - ep.below > 15000) closeEpisode(true);
+    }
+  }
+  function closeEpisode(final) {
+    if (!ep.id) return;
+    NUBE.sb.from('alertas').update({ velocidad: ep.max, ...ep.maxPos, fin: new Date().toISOString() }).eq('id', ep.id).then(() => {}, () => {});
+    if (final) Object.assign(ep, { id: null, max: 0, below: 0, maxPos: null });
   }
   async function setTripState(v, estado) {
     if (!NUBE || !v || v.estado === estado || v.estado === 'terminado') return;

@@ -31,23 +31,40 @@ Deno.serve(async req => {
   const token = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
   const { data: who } = token ? await admin.auth.getUser(token) : { data: null };
   if (!who?.user) return fail('Tenés que entrar como dueño.', 401);
-  const { data: yo } = await admin.from('perfiles').select('rol').eq('id', who.user.id).maybeSingle();
-  if (yo?.rol !== 'dueno' && yo?.rol !== 'admin') return fail('Solo el dueño o un administrador puede manejar choferes.', 403);
+  const { data: yo } = await admin.from('perfiles').select('rol, solo_lectura').eq('id', who.user.id).maybeSingle();
+  if ((yo?.rol !== 'dueno' && yo?.rol !== 'admin') || yo?.solo_lectura) return fail('Solo el dueño o un administrador puede manejar choferes.', 403);
 
   let m: Record<string, unknown>;
   try { m = await req.json(); } catch { return fail('Pedido inválido'); }
 
   // ---- Administradores (solo el dueño) ----
-  if (m.accion === 'crear_admin' || m.accion === 'borrar_admin' || m.accion === 'clave_admin') {
+  if (m.accion === 'crear_admin' || m.accion === 'borrar_admin' || m.accion === 'clave_admin' || m.accion === 'permiso_admin') {
     if (yo?.rol !== 'dueno') return fail('Solo el dueño puede manejar administradores.', 403);
+    if (m.accion === 'permiso_admin') {   // pasar de "solo mirar" a administrador completo o al revés
+      const { data: ad } = await admin.from('perfiles').select('rol').eq('id', String(m.id ?? '')).maybeSingle();
+      if (ad?.rol !== 'admin') return fail('Administrador no encontrado.', 404);
+      const { error } = await admin.from('perfiles').update({ solo_lectura: m.solo_lectura === true }).eq('id', String(m.id));
+      if (error) return fail(error.message, 500);
+      return json({ ok: true });
+    }
     if (m.accion === 'crear_admin') {
-      const nombre = String(m.nombre ?? '').trim().slice(0, 80), email = String(m.email ?? '').trim().toLowerCase(), clave = String(m.clave ?? '');
+      // Entra con email y contraseña, o con usuario y contraseña (como los choferes)
+      const nombre = String(m.nombre ?? '').trim().slice(0, 80), clave = String(m.clave ?? ''), soloLectura = m.solo_lectura === true;
+      const acceso = String(m.email ?? m.usuario ?? '').trim();
+      const conEmail = acceso.includes('@');
+      const email = conEmail ? acceso.toLowerCase() : null, usuario = conEmail ? null : limpiarUsuario(acceso);
       if (!nombre) return fail('Falta el nombre.');
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return fail('El email no es válido.');
-      if (clave.length < 8) return fail('La contraseña tiene que tener al menos 8 caracteres.');
-      const { data, error } = await admin.auth.admin.createUser({ email, password: clave, email_confirm: true, user_metadata: { nombre, rol: 'admin' } });
+      if (conEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email!)) return fail('El email no es válido.');
+      if (!conEmail && !usuarioOk(usuario!)) return fail('El usuario tiene que tener de 3 a 30 letras o números, sin espacios.');
+      if (clave.length < 6) return fail('La contraseña tiene que tener al menos 6 caracteres.');
+      if (usuario) {
+        const { data: dup } = await admin.from('perfiles').select('id').eq('usuario', usuario).maybeSingle();
+        if (dup) return fail('Ya hay alguien con ese usuario.');
+      }
+      const { data, error } = await admin.auth.admin.createUser({ email: email ?? emailDe(usuario!), password: email ? clave : claveDe(clave), email_confirm: true,
+        user_metadata: { nombre, rol: 'admin' } });
       if (error || !data.user) return fail('No se pudo crear: ' + (error?.message || 'error desconocido'), 500);
-      const { error: e2 } = await admin.from('perfiles').insert({ id: data.user.id, nombre, email, rol: 'admin' });
+      const { error: e2 } = await admin.from('perfiles').insert({ id: data.user.id, nombre, email, usuario, rol: 'admin', solo_lectura: soloLectura });
       if (e2) { await admin.auth.admin.deleteUser(data.user.id); return fail('No se pudo crear: ' + e2.message, 500); }
       return json({ ok: true, id: data.user.id });
     }
@@ -56,7 +73,7 @@ Deno.serve(async req => {
     if (ad?.rol !== 'admin') return fail('Administrador no encontrado.', 404);
     if (m.accion === 'clave_admin') {
       const clave = String(m.clave ?? '');
-      if (clave.length < 8) return fail('La contraseña tiene que tener al menos 8 caracteres.');
+      if (clave.length < 6) return fail('La contraseña tiene que tener al menos 6 caracteres.');
       // Los que entran con usuario (sin email) usan la misma clave interna que los choferes
       const { error } = await admin.auth.admin.updateUserById(aid, { password: ad.usuario && !ad.email ? claveDe(clave) : clave });
       if (error) return fail(error.message, 500);

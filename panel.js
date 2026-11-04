@@ -55,6 +55,8 @@
     if (!st.error) D.sitrack = st.data;
     const ad = await sb.from('perfiles').select('*').in('rol', ['dueno', 'admin']).order('nombre');
     if (!ad.error) D.admins = ad.data;
+    const ev = await sb.from('eventos').select('*').gte('at', inicioDia(hoyISO())).order('at', { ascending: false }).limit(100);
+    if (!ev.error) D.eventos = ev.data;
     for (const [k, r] of Object.entries({ choferes: ch, camiones: ca, lugares: lu, viajes: vi, posiciones: po, alertas: al, bloqueos: bl })) {
       if (r.error) fail(r.error, 'No se pudo cargar ' + k); else D[k] = r.data;
     }
@@ -90,6 +92,9 @@
     map.addSource('plan', { type: 'geojson', data: EMPTY });
     map.addLayer({ id: 'plan-borde', type: 'line', source: 'plan', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 8 } });
     map.addLayer({ id: 'plan', type: 'line', source: 'plan', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#12873e', 'line-width': 5 } });
+    map.addSource('historial', { type: 'geojson', data: EMPTY });
+    map.addLayer({ id: 'historial-borde', type: 'line', source: 'historial', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 7 } });
+    map.addLayer({ id: 'historial', type: 'line', source: 'historial', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#d9480f', 'line-width': 4 } });
     map.addSource('radares', { type: 'geojson', data: EMPTY });
     map.addLayer({ id: 'radares', type: 'circle', source: 'radares', minzoom: 7, paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 7, 3, 14, 7], 'circle-color': '#1d3f9a', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
     map.addSource('bloqueos', { type: 'geojson', data: EMPTY });
@@ -215,7 +220,7 @@
   function renderAll() {
     fillSelects(); renderLive(); renderAlerts(); renderViajes(); renderChoferes(); renderCamiones(); renderLugares(); renderCalles();
     $('f-ajustes').velocidad_max.value = D.ajustes.velocidad_max;
-    renderSitrack(); renderAdmins();
+    renderSitrack(); renderAdmins(); renderEventos(); fillHistorial();
     drawTrucks(); drawSat(); drawLugares(); drawBloqueos(); drawRutas(); frameAll();
   }
   const opts = (arr, label, empty) => (empty != null ? `<option value="">${esc(empty)}</option>` : '') + arr.map(x => `<option value="${esc(x.id)}">${esc(label(x))}</option>`).join('');
@@ -265,7 +270,8 @@
     box.innerHTML = (unseen ? '<button type="button" class="btn ghost sm" data-all-seen>Marcar todas como vistas</button>' : '') + D.alertas.slice(0, 40).map(a => {
       const c = chofer(a.chofer_id), t = camion(a.camion_id);
       const quienVa = c ? c.nombre : t ? t.nombre : a.asset_id || 'Chofer';
-      return `<div class="row stack${a.vista ? '' : ' unseen'}"><span class="ico">${a.origen === 'satelital' ? '🛰' : '⚠️'}</span><span><span class="t">${esc(quienVa)}: ${Math.round(a.velocidad)} km/h (máx. ${Math.round(a.limite)})</span><br><span class="m">${esc([c && t && t.nombre, a.origen === 'satelital' ? 'rastreador' : '', new Date(a.at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' })].filter(Boolean).join(' · '))}</span></span>
+      const dur = a.fin ? Math.round((new Date(a.fin) - new Date(a.at)) / 60000) : 0;
+      return `<div class="row stack${a.vista ? '' : ' unseen'}"><span class="ico">${a.origen === 'satelital' ? '🛰' : '⚠️'}</span><span><span class="t">${esc(quienVa)}: ${Math.round(a.velocidad)} km/h máx. (límite ${Math.round(a.limite)})</span><br><span class="m">${esc([c && t && t.nombre, dur >= 1 ? `durante ${dur} min` : '', a.direccion ? a.direccion.split(',').slice(0, 2).join(',') : '', a.origen === 'satelital' ? 'rastreador' : 'app', new Date(a.at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' })].filter(Boolean).join(' · '))}</span></span>
         <span class="acts">${a.lat != null ? `<button type="button" class="btn ghost sm" data-where="${a.id}">Dónde</button>` : ''}${a.vista ? '' : `<button type="button" class="btn ghost sm" data-seen="${a.id}">Visto</button>`}</span></div>`;
     }).join('');
   }
@@ -650,14 +656,21 @@
   function renderAdmins() {
     const box = $('admins'); if (!box) return;
     const soyDueno = me && me.rol === 'dueno';
-    box.innerHTML = D.admins.map(a => `<div class="row stack"><span class="ico">${a.rol === 'dueno' ? '👑' : '🧑‍💼'}</span><span><span class="t">${esc(a.nombre)}${me && a.id === me.id ? ' (vos)' : ''}</span><br><span class="m">${a.rol === 'dueno' ? 'Dueño' : 'Administrador'}${a.email ? ' · ' + esc(a.email) : a.usuario ? ' · usuario ' + esc(a.usuario) : ''}</span></span>
-      <span class="acts">${soyDueno && a.rol === 'admin' ? `<button type="button" class="btn ghost sm" data-aclave="${a.id}">Nueva contraseña</button><button type="button" class="btn danger sm" data-adel="${a.id}">Borrar</button>` : ''}</span></div>`).join('');
+    box.innerHTML = D.admins.map(a => `<div class="row stack"><span class="ico">${a.rol === 'dueno' ? '👑' : a.solo_lectura ? '👀' : '🧑‍💼'}</span><span><span class="t">${esc(a.nombre)}${me && a.id === me.id ? ' (vos)' : ''}</span><br><span class="m">${a.rol === 'dueno' ? 'Dueño' : a.solo_lectura ? 'Solo mira' : 'Administrador'}${a.email ? ' · ' + esc(a.email) : a.usuario ? ' · usuario ' + esc(a.usuario) : ''}</span></span>
+      <span class="acts">${soyDueno && a.rol === 'admin' ? `<button type="button" class="btn ghost sm" data-aperm="${a.id}">${a.solo_lectura ? 'Darle permisos completos' : 'Pasar a solo mirar'}</button><button type="button" class="btn ghost sm" data-aclave="${a.id}">Nueva contraseña</button><button type="button" class="btn danger sm" data-adel="${a.id}">Borrar</button>` : ''}</span></div>`).join('');
   }
   $('admins').addEventListener('click', async e => {
     const b = e.target.closest('button'); if (!b) return;
-    const a = byId(D.admins, b.dataset.aclave || b.dataset.adel); if (!a) return;
+    const a = byId(D.admins, b.dataset.aclave || b.dataset.adel || b.dataset.aperm); if (!a) return;
+    if (b.dataset.aperm) {
+      const solo = !a.solo_lectura;
+      if (!confirm(solo ? `¿${a.nombre} pasa a solo mirar? No va a poder cambiar nada.` : `¿Darle a ${a.nombre} permisos completos (asignar viajes, crear choferes, editar)?`)) return;
+      const r = await N.funcion('choferes', { accion: 'permiso_admin', id: a.id, solo_lectura: solo });
+      if (!r.ok) { toast(r.data.error?.message || 'No se pudo', true); return; }
+      a.solo_lectura = solo; renderAdmins(); toast('Listo. Se aplica la próxima vez que entre o recargue.');
+    }
     if (b.dataset.aclave) {
-      const clave = prompt(`Nueva contraseña para ${a.nombre} (mínimo 8 caracteres):`, ''); if (!clave) return;
+      const clave = prompt(`Nueva contraseña para ${a.nombre} (mínimo 6 caracteres; mejor 8 o más):`, ''); if (!clave) return;
       const r = await N.funcion('choferes', { accion: 'clave_admin', id: a.id, clave });
       toast(r.ok ? 'Contraseña cambiada. Tiene que volver a entrar.' : (r.data.error?.message || 'No se pudo'), !r.ok);
     }
@@ -671,13 +684,89 @@
     e.preventDefault();
     const f = e.target, btn = f.querySelector('[type=submit]'); btn.disabled = true;
     try {
-      const r = await N.funcion('choferes', { accion: 'crear_admin', nombre: f.nombre.value.trim(), email: f.email.value.trim(), clave: f.clave.value });
+      const r = await N.funcion('choferes', { accion: 'crear_admin', nombre: f.nombre.value.trim(), email: f.email.value.trim(), clave: f.clave.value, solo_lectura: f.solo.checked });
       if (!r.ok) { toast(r.data.error?.message || 'No se pudo crear', true); return; }
-      toast(`Listo: ${f.nombre.value.trim()} entra al panel con ${f.email.value.trim()} y la contraseña que pusiste.`);
+      toast(`Listo: ${f.nombre.value.trim()} entra al panel (${location.href.replace(/[?#].*$/, '')}) con "${f.email.value.trim().includes('@') ? f.email.value.trim() : N.limpiarUsuario(f.email.value)}" y la contraseña que pusiste.`);
       f.reset();
       const ad = await sb.from('perfiles').select('*').in('rol', ['dueno', 'admin']).order('nombre');
       if (!ad.error) { D.admins = ad.data; renderAdmins(); }
     } finally { btn.disabled = false; }
+  });
+
+  // ---------- Llegadas y salidas ----------
+  D.eventos = [];
+  const inicioDia = iso => new Date(iso + 'T00:00:00-03:00').toISOString();
+  function eventoTxt(e) {
+    const l = lugar(e.lugar_id), t = camion(e.camion_id), c = chofer(e.chofer_id);
+    const quien = t ? t.nombre : c ? c.nombre : e.asset_id || 'Un camión';
+    return `${quien} ${e.tipo === 'llegada' ? 'llegó a' : 'salió de'} ${l ? l.nombre.replace(VIAJE_PREF, '') : 'un lugar'}`;
+  }
+  function renderEventos() {
+    const box = $('eventos'); if (!box) return;
+    const hoy = D.eventos.filter(e => e.at >= inicioDia(hoyISO()));
+    box.innerHTML = hoy.length ? hoy.slice(0, 30).map(e => `<div class="row"><span class="ico">${e.tipo === 'llegada' ? '🏁' : '🚚'}</span><span><span class="t">${esc(eventoTxt(e))}</span><br><span class="m">${new Date(e.at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}</span></span><span></span></div>`).join('')
+      : '<p class="empty">Todavía nada hoy. Se avisa cuando un camión entra o sale de un lugar guardado (a menos de 250 m).</p>';
+  }
+
+  // ---------- Historial: recorrido del día y resumen ----------
+  function fillHistorial() {
+    const f = $('f-reco'), v = f.quien.value;
+    f.quien.innerHTML = '<option value="">Elegí…</option>' +
+      `<optgroup label="Camiones">${D.camiones.filter(c => c.activo).map(c => `<option value="c:${esc(c.id)}">${esc(c.nombre)}</option>`).join('')}</optgroup>` +
+      `<optgroup label="Choferes (app)">${D.choferes.map(c => `<option value="p:${esc(c.id)}">${esc(c.nombre)}</option>`).join('')}</optgroup>`;
+    if (v) f.quien.value = v;
+    if (!f.dia.value) f.dia.value = hoyISO();
+    const r = $('f-resumen');
+    if (!r.hasta.value) { r.hasta.value = hoyISO(); const d = new Date(Date.now() - 6 * 864e5); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); r.desde.value = d.toISOString().slice(0, 10); }
+  }
+  const metros = (a, b) => { const R = 6371000, k = Math.PI / 180, x = (b[0] - a[0]) * k * Math.cos((a[1] + b[1]) / 2 * k), y = (b[1] - a[1]) * k; return Math.sqrt(x * x + y * y) * R; };
+  let recoMarkers = [];
+  $('f-reco').addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = e.target, [tipo, id] = f.quien.value.split(':'), box = $('reco-res');
+    if (!id) return;
+    box.innerHTML = '<p class="empty">Buscando…</p>';
+    const desde = inicioDia(f.dia.value), hasta = new Date(new Date(desde).getTime() + 864e5).toISOString();
+    const pts = [];
+    for (let from = 0; from < 20000; from += 1000) {
+      const { data, error } = await sb.from('recorridos').select('lat, lon, velocidad, at, fuente').eq(tipo === 'c' ? 'camion_id' : 'chofer_id', id)
+        .gte('at', desde).lt('at', hasta).order('at').range(from, from + 999);
+      if (error) { box.innerHTML = `<p class="err">${esc(error.message)}</p>`; return; }
+      pts.push(...data); if (data.length < 1000) break;
+    }
+    // Si hay datos del rastreador, se usan esos (son más parejos); si no, los de la app
+    const sat = pts.filter(p => p.fuente === 'satelital'), usar = tipo === 'c' && sat.length > 1 ? sat : pts;
+    recoMarkers.forEach(m => m.remove()); recoMarkers = [];
+    const src = map.getSource('historial');
+    if (usar.length < 2) { if (src) src.setData(EMPTY); box.innerHTML = '<p class="empty">No hay recorrido guardado ese día. Se guarda desde que se activó el historial.</p>'; return; }
+    const coords = usar.map(p => [p.lon, p.lat]);
+    let km = 0, vmax = 0;
+    for (let i = 1; i < usar.length; i++) {
+      const m = metros(coords[i - 1], coords[i]), s = (new Date(usar[i].at) - new Date(usar[i - 1].at)) / 1000;
+      if (s > 0 && m / s < 42) km += m;                       // descarta saltos imposibles
+      vmax = Math.max(vmax, usar[i].velocidad || 0);
+    }
+    if (src) src.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
+    const hora = p => new Date(p.at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+    for (const [p, txt, color] of [[usar[0], 'Salida ' + hora(usar[0]), '#12873e'], [usar[usar.length - 1], 'Último ' + hora(usar[usar.length - 1]), '#c8102e']]) {
+      recoMarkers.push(new maplibregl.Marker({ color }).setLngLat([p.lon, p.lat]).setPopup(new maplibregl.Popup().setText(txt)).addTo(map));
+    }
+    const lo = coords.map(c => c[0]), la = coords.map(c => c[1]);
+    map.fitBounds([[Math.min(...lo), Math.min(...la)], [Math.max(...lo), Math.max(...la)]], { padding: 60, duration: 700 });
+    const { data: evs } = await sb.from('eventos').select('*').eq(tipo === 'c' ? 'camion_id' : 'chofer_id', id).gte('at', desde).lt('at', hasta).order('at');
+    box.innerHTML = `<p class="okmsg">${fmt(km >= 10000 ? Math.round(km / 1000) : (km / 1000).toFixed(1))} km · de ${hora(usar[0])} a ${hora(usar[usar.length - 1])} · máxima ${Math.round(vmax)} km/h · ${usar === sat ? 'rastreador' : 'app'}</p>` +
+      ((evs || []).length ? '<div class="list">' + evs.map(e => `<div class="row"><span class="ico">${e.tipo === 'llegada' ? '🏁' : '🚚'}</span><span class="t">${hora(e)} · ${esc(eventoTxt(e))}</span><span></span></div>`).join('') + '</div>' : '');
+  });
+  $('f-resumen').addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = e.target, box = $('resumen');
+    box.innerHTML = '<p class="empty">Calculando…</p>';
+    const { data, error } = await sb.rpc('resumen', { p_desde: f.desde.value, p_hasta: f.hasta.value });
+    if (error) { box.innerHTML = `<p class="err">${esc(error.message)}</p>`; return; }
+    const tabla = (titulo, filas) => `<h2>${titulo}</h2><div class="card"><table class="tabla"><thead><tr><th></th><th>Km</th><th>Viajes</th><th>Excesos</th><th>Máx.</th></tr></thead><tbody>${
+      filas.map(r => `<tr><td>${esc(r.nombre)}</td><td>${fmt(r.km)}</td><td>${r.viajes}</td><td class="${r.excesos ? 'mal' : ''}">${r.excesos}</td><td>${r.vmax ? Math.round(r.vmax) : '–'}</td></tr>`).join('') || '<tr><td colspan="5">Sin datos</td></tr>'}</tbody></table></div>`;
+    box.innerHTML = tabla('Por camión', data.camiones) + tabla('Por chofer (app)', data.choferes) +
+      '<p class="tip">Los km salen del rastreador satelital o de la app del chofer, desde que se activó el historial. Excesos = tramos por encima de la velocidad máxima.</p>';
   });
 
   // ---------- Rastreador satelital (Sitrack) ----------
@@ -733,6 +822,13 @@
         if (p.eventType === 'DELETE') D.posiciones = D.posiciones.filter(x => x.chofer_id !== p.old.chofer_id); else upsertLocal('posiciones', p.new);
         drawTrucks(); drawRutas(); if (tab === 'vivo') renderLive();
       })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'alertas' }, p => {
+        const a = D.alertas.find(x => x.id === p.new.id); if (a) { Object.assign(a, p.new); renderAlerts(); }
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'eventos' }, p => {
+        D.eventos.unshift(p.new); renderEventos();
+        toast(`${p.new.tipo === 'llegada' ? '🏁' : '🚚'} ${eventoTxt(p.new)}`);
+      })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'alertas' }, p => {
         D.alertas.unshift(p.new); renderAlerts(); beep();
         const c = chofer(p.new.chofer_id), t = camion(p.new.camion_id);
@@ -772,6 +868,7 @@
     me = p;
     $('who').textContent = p.nombre + (p.rol === 'admin' ? ' · administrador' : ''); $('b-logout').hidden = false;
     $('f-admin').hidden = p.rol !== 'dueno';
+    document.body.classList.toggle('lector', !!p.solo_lectura);   // solo mira: se esconden los botones para cambiar cosas
     $('login').hidden = true; $('layout').hidden = false; map.resize();
     await loadAll(); subscribe(); loadRadares();
     if ('Notification' in window && Notification.permission === 'default') document.addEventListener('click', () => Notification.requestPermission().catch(() => {}), { once: true });

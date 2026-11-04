@@ -26,7 +26,7 @@
     if (!sb) return null;
     if (perfil && !force) return perfil;
     const s = await sesion(); if (!s) { perfil = null; return null; }
-    const { data, error } = await sb.from('perfiles').select('id, nombre, usuario, rol, camion_id').eq('id', s.user.id).maybeSingle();
+    const { data, error } = await sb.from('perfiles').select('*').eq('id', s.user.id).maybeSingle();
     if (error) {
       // Sin señal: usar el último perfil conocido
       try { const p = JSON.parse(localStorage.getItem('camionesar.perfil') || 'null'); if (p && p.id === s.user.id) return (perfil = p); } catch (e) { /* nada */ }
