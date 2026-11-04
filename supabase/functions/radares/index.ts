@@ -73,8 +73,8 @@ Deno.serve(async req => {
   const token = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
   const { data: who } = token ? await admin.auth.getUser(token) : { data: null };
   if (!who?.user) return json({ error: 'Tenés que entrar al panel.' }, 401);
-  const { data: yo } = await admin.from('perfiles').select('rol').eq('id', who.user.id).maybeSingle();
-  if (yo?.rol !== 'dueno' && yo?.rol !== 'admin') return json({ error: 'Solo el dueño o un administrador.' }, 403);
+  const { data: yo } = await admin.from('perfiles').select('rol, solo_lectura').eq('id', who.user.id).maybeSingle();
+  if ((yo?.rol !== 'dueno' && yo?.rol !== 'admin') || yo?.solo_lectura) return json({ error: 'Solo el dueño o un administrador.' }, 403);
 
   // 1) Pedir a OpenStreetMap (Overpass) todas las fotomultas de Argentina
   let datos: { elements?: El[] } | null = null, ultimoError = '';

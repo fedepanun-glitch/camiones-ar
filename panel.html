@@ -31,6 +31,7 @@
       <button type="button" role="tab" data-tab="lugares">Lugares</button>
       <button type="button" role="tab" data-tab="calles">Calles</button>
       <button type="button" role="tab" data-tab="fotomultas">Fotomultas</button>
+      <button type="button" role="tab" data-tab="historial">Historial</button>
       <button type="button" role="tab" data-tab="ajustes">Ajustes</button>
     </nav>
 
@@ -38,6 +39,8 @@
     <section class="pane" data-pane="vivo">
       <h2>Camiones en la calle</h2>
       <div class="list" id="live"></div>
+      <h2>Llegadas y salidas de hoy</h2>
+      <div class="list" id="eventos"></div>
       <h2>Alertas de velocidad</h2>
       <div class="list" id="alerts"></div>
     </section>
@@ -124,6 +127,24 @@
       <div class="list" id="cams"></div>
     </section>
 
+    <!-- Historial -->
+    <section class="pane" data-pane="historial" hidden>
+      <h2>Recorrido del día</h2>
+      <form class="card form" id="f-reco">
+        <label>Camión o chofer<select name="quien" required></select></label>
+        <label>Día<input name="dia" type="date" required></label>
+        <button type="submit" class="btn go wide">Ver recorrido</button>
+        <div class="wide" id="reco-res"></div>
+      </form>
+      <h2>Resumen</h2>
+      <form class="card form" id="f-resumen">
+        <label>Desde<input name="desde" type="date" required></label>
+        <label>Hasta<input name="hasta" type="date" required></label>
+        <button type="submit" class="btn go wide">Ver resumen</button>
+      </form>
+      <div id="resumen"></div>
+    </section>
+
     <!-- Ajustes -->
     <section class="pane" data-pane="ajustes" hidden>
       <h2>Velocidad máxima</h2>
@@ -143,8 +164,9 @@
       <div class="list" id="admins"></div>
       <form class="card form" id="f-admin" hidden>
         <label class="wide">Nombre<input name="nombre" type="text" required maxlength="80" placeholder="Ej.: María (administración)"></label>
-        <label>Email<input name="email" type="email" required autocomplete="off"></label>
-        <label>Contraseña<input name="clave" type="text" required minlength="8" autocomplete="off"></label>
+        <label>Email o usuario<input name="email" type="text" required autocomplete="off" autocapitalize="none" placeholder="maria@empresa.com o maria"></label>
+        <label>Contraseña<input name="clave" type="text" required minlength="6" autocomplete="off"></label>
+        <label class="check wide"><input name="solo" type="checkbox"> Solo puede mirar (no cambia nada)</label>
         <button type="submit" class="btn go wide">Crear administrador</button>
       </form>
     </section>

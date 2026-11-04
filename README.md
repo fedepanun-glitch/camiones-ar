@@ -22,7 +22,10 @@ Sin la nube configurada (ver abajo), la app funciona como antes: todo queda guar
 - **Calles**: las marcadas como "No puedo pasar", quién y cuándo; se pueden sacar o marcar nuevas.
 - **Ajustes**: velocidad máxima de la empresa.
 - **Fotomultas**: se traen de OpenStreetMap y se cargan a mano las que falten. La app avisa a unos 500 m ("Fotomulta a 400 metros, máxima 130") y suena si el camión va más rápido que la máxima.
-- **Administradores** (en Ajustes): el dueño crea cuentas para administrativos o socios, que entran al panel con email y contraseña, también desde el celular.
+- **Historial**: recorrido de cualquier camión o chofer en un día (línea en el mapa, km, horarios, máxima, llegadas y salidas) y resumen por fechas (km, viajes y excesos por camión y por chofer). Se guardan 90 días.
+- **Llegadas y salidas**: aviso cuando un camión entra o sale de un lugar guardado (a menos de 250 m).
+- **Alertas por tramo**: una alerta por cada vez que un camión se pasa de velocidad, con la máxima, cuánto duró y dónde.
+- **Administradores** (en Ajustes): el dueño crea cuentas para administrativos o socios, que entran al panel con email o usuario y contraseña, también desde el celular. Pueden ser completos o de **solo mirar**.
 
 La ubicación se manda mientras la app está abierta en el celular del chofer (los navegadores no permiten mandarla con la pantalla apagada o la app cerrada).
 

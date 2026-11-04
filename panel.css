@@ -125,3 +125,19 @@ body.picking .maplibregl-canvas { cursor: crosshair; }
 .addr { background: var(--bg); border: 2px dashed var(--line); border-radius: 12px; padding: 10px; }
 .addr select { background: var(--card); border: 2px solid var(--line); border-radius: 8px; padding: 6px 8px; color: var(--ink); }
 .addr .check { font-size: .9rem !important; }
+
+/* Historial y resumen */
+.tabla { width: 100%; border-collapse: collapse; font-size: .92rem; }
+.tabla th, .tabla td { padding: 6px 4px; text-align: right; border-bottom: 1px solid var(--line); }
+.tabla th:first-child, .tabla td:first-child { text-align: left; overflow-wrap: anywhere; }
+.tabla th { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+.tabla td.mal { color: var(--red); font-weight: 700; }
+#reco-res .okmsg { margin: 4px 0 8px; }
+
+/* Solo mirar: se esconden formularios y botones para cambiar cosas */
+body.lector .side form:not(#f-reco):not(#f-resumen):not(.tcard),
+body.lector #new-chofer,
+body.lector .side .btn:not([data-fly]):not([data-satfly]):not([data-ruta]):not([data-lfly]):not([data-bfly]):not([data-cfly]):not([data-where]):not(#f-reco .btn):not(#f-resumen .btn),
+body.lector .maplibregl-popup .btn { display: none !important; }
+body.lector .tcard input, body.lector .side select[data-cam] { pointer-events: none; opacity: .8; }
+body.lector .side::before { content: "👀 Modo solo mirar: podés ver todo, pero no cambiar nada."; display: block; margin: 10px 0 0; padding: 8px 12px; border-radius: 10px; background: color-mix(in srgb, var(--route) 14%, transparent); font-weight: 600; font-size: .9rem; }

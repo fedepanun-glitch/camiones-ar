@@ -11,7 +11,7 @@ const PAIS = (Deno.env.get('SITRACK_PAIS') || 'ar').toLowerCase();       // ar |
 const TEST = Deno.env.get('SITRACK_TEST') === '1';                       // ambiente de pruebas de Sitrack
 const URL_REPORT = `https://${TEST ? 'test-' : ''}externalappgw.${PAIS}.sitrack.com/v2/report`;
 const FRESCO_MS = 5 * 60 * 1000;      // para alertas: solo reportes de los últimos 5 minutos
-const ENTRE_ALERTAS_MS = 10 * 60 * 1000;
+const TRAMO_MS = 4 * 60 * 1000;       // si vuelve a pasarse dentro de 4 minutos, es el mismo tramo de exceso
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -56,8 +56,8 @@ Deno.serve(async req => {
     const token = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
     const { data: who } = token ? await admin.auth.getUser(token) : { data: null };
     if (who?.user) {
-      const { data: yo } = await admin.from('perfiles').select('rol').eq('id', who.user.id).maybeSingle();
-      permitido = yo?.rol === 'dueno' || yo?.rol === 'admin';
+      const { data: yo } = await admin.from('perfiles').select('rol, solo_lectura').eq('id', who.user.id).maybeSingle();
+      permitido = (yo?.rol === 'dueno' || yo?.rol === 'admin') && !yo?.solo_lectura;
     }
   }
   if (!permitido) return json({ error: 'No autorizado' }, 401);
@@ -128,7 +128,7 @@ Deno.serve(async req => {
     if (vel !== null && vel > limite && Date.now() - new Date(at).getTime() < FRESCO_MS) {
       const viaje = (viajes || []).find(v => v.camion_id && v.camion_id === camionId);
       alertas.push({ asset_id: asset, camion_id: camionId, chofer_id: viaje?.chofer_id ?? null, viaje_id: viaje?.id ?? null,
-        velocidad: vel, limite, lat, lon, origen: 'satelital', at });
+        velocidad: vel, limite, lat, lon, origen: 'satelital', at, fin: at, direccion: r.location ? String(r.location).slice(0, 200) : null });
     }
   }
   if (filas.length) {
@@ -136,11 +136,19 @@ Deno.serve(async req => {
     if (error) { await guardarEstado(false, 'No se pudieron guardar las posiciones: ' + error.message); return json({ ok: false, error: error.message }, 500); }
   }
 
-  // 3) Alertas de velocidad (una cada 10 minutos por camión como máximo)
+  // 3) Alertas de velocidad: una por tramo de exceso. Mientras sigue pasado, se actualiza la máxima y hasta cuándo duró.
   let nuevas = 0;
   for (const a of alertas) {
-    const { data: ult } = await admin.from('alertas').select('at').eq('asset_id', a.asset_id).order('at', { ascending: false }).limit(1).maybeSingle();
-    if (ult && Date.now() - new Date(ult.at).getTime() < ENTRE_ALERTAS_MS) continue;
+    const { data: ult } = await admin.from('alertas').select('id, at, fin, velocidad').eq('asset_id', a.asset_id).eq('origen', 'satelital')
+      .order('at', { ascending: false }).limit(1).maybeSingle();
+    const finAnterior = ult ? new Date(ult.fin || ult.at).getTime() : 0;
+    if (ult && new Date(a.at).getTime() - finAnterior < TRAMO_MS) {
+      if (new Date(a.at).getTime() > finAnterior) {
+        await admin.from('alertas').update({ fin: a.at, velocidad: Math.max(ult.velocidad, a.velocidad),
+          ...(a.velocidad > ult.velocidad ? { lat: a.lat, lon: a.lon, direccion: a.direccion } : {}) }).eq('id', ult.id);
+      }
+      continue;
+    }
     const { error } = await admin.from('alertas').insert(a);
     if (!error) nuevas++;
   }
