@@ -57,7 +57,7 @@ Deno.serve(async req => {
     const { data: who } = token ? await admin.auth.getUser(token) : { data: null };
     if (who?.user) {
       const { data: yo } = await admin.from('perfiles').select('rol').eq('id', who.user.id).maybeSingle();
-      permitido = yo?.rol === 'dueno';
+      permitido = yo?.rol === 'dueno' || yo?.rol === 'admin';
     }
   }
   if (!permitido) return json({ error: 'No autorizado' }, 401);

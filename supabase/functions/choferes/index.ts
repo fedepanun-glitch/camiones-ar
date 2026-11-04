@@ -1,5 +1,6 @@
 // Camiones AR — función "choferes".
-// El dueño da de alta, cambia el PIN o da de baja a un chofer. Solo el dueño puede llamarla.
+// El dueño (o un administrador) da de alta, cambia el PIN o da de baja a un chofer.
+// Solo el dueño crea o borra administradores (entran al panel con email y contraseña).
 // Cada chofer entra con "usuario" + PIN; por dentro es una cuenta de Supabase con un email interno.
 import { createClient } from 'npm:@supabase/supabase-js@2.110.0';
 
@@ -31,10 +32,40 @@ Deno.serve(async req => {
   const { data: who } = token ? await admin.auth.getUser(token) : { data: null };
   if (!who?.user) return fail('Tenés que entrar como dueño.', 401);
   const { data: yo } = await admin.from('perfiles').select('rol').eq('id', who.user.id).maybeSingle();
-  if (yo?.rol !== 'dueno') return fail('Solo el dueño puede manejar choferes.', 403);
+  if (yo?.rol !== 'dueno' && yo?.rol !== 'admin') return fail('Solo el dueño o un administrador puede manejar choferes.', 403);
 
   let m: Record<string, unknown>;
   try { m = await req.json(); } catch { return fail('Pedido inválido'); }
+
+  // ---- Administradores (solo el dueño) ----
+  if (m.accion === 'crear_admin' || m.accion === 'borrar_admin' || m.accion === 'clave_admin') {
+    if (yo?.rol !== 'dueno') return fail('Solo el dueño puede manejar administradores.', 403);
+    if (m.accion === 'crear_admin') {
+      const nombre = String(m.nombre ?? '').trim().slice(0, 80), email = String(m.email ?? '').trim().toLowerCase(), clave = String(m.clave ?? '');
+      if (!nombre) return fail('Falta el nombre.');
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return fail('El email no es válido.');
+      if (clave.length < 8) return fail('La contraseña tiene que tener al menos 8 caracteres.');
+      const { data, error } = await admin.auth.admin.createUser({ email, password: clave, email_confirm: true, user_metadata: { nombre, rol: 'admin' } });
+      if (error || !data.user) return fail('No se pudo crear: ' + (error?.message || 'error desconocido'), 500);
+      const { error: e2 } = await admin.from('perfiles').insert({ id: data.user.id, nombre, email, rol: 'admin' });
+      if (e2) { await admin.auth.admin.deleteUser(data.user.id); return fail('No se pudo crear: ' + e2.message, 500); }
+      return json({ ok: true, id: data.user.id });
+    }
+    const aid = String(m.id ?? '');
+    const { data: ad } = await admin.from('perfiles').select('rol').eq('id', aid).maybeSingle();
+    if (ad?.rol !== 'admin') return fail('Administrador no encontrado.', 404);
+    if (m.accion === 'clave_admin') {
+      const clave = String(m.clave ?? '');
+      if (clave.length < 8) return fail('La contraseña tiene que tener al menos 8 caracteres.');
+      const { error } = await admin.auth.admin.updateUserById(aid, { password: clave });
+      if (error) return fail(error.message, 500);
+      await admin.rpc('cerrar_sesiones', { p_user: aid });
+      return json({ ok: true });
+    }
+    const { error } = await admin.auth.admin.deleteUser(aid);
+    if (error) return fail(error.message, 500);
+    return json({ ok: true });
+  }
 
   if (m.accion === 'crear') {
     const usuario = limpiarUsuario(m.usuario), nombre = String(m.nombre ?? '').trim().slice(0, 80);

@@ -39,6 +39,8 @@
   let favs = store.get('favs', []);       // [{label, lat, lon}]
   let lugares = NUBE ? store.get('lugares', []) : [];   // lugares de la empresa
   let viajes = NUBE ? store.get('viajes', []) : [];     // viajes asignados a este chofer
+  let radares = NUBE ? store.get('radares', []) : [];   // fotomultas (id, lat, lon, maxima)
+  const nombreLugar = n => String(n || '').replace(/^Viaje · /, '');   // direcciones de un solo viaje
   let viaje = null;                                     // viaje en curso (si se salió desde "Tus viajes")
 
   // ---------- Restricciones ----------
@@ -119,13 +121,17 @@
     map.addSource('route', { type: 'geojson', data: EMPTY });
     map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 12 } });
     map.addLayer({ id: 'route', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': cssVar('--route'), 'line-width': 7 } });
+    map.addSource('radares', { type: 'geojson', data: EMPTY });
+    map.addLayer({ id: 'radares', type: 'symbol', source: 'radares', minzoom: 9, layout: {
+      'icon-image': ['get', 'icon'], 'icon-allow-overlap': true, 'icon-ignore-placement': true,
+      'icon-size': ['interpolate', ['linear'], ['zoom'], 9, 0.3, 13, 0.5, 17, 0.7] } });
     map.addSource('restr', { type: 'geojson', data: EMPTY });
     map.addLayer({ id: 'restr', type: 'symbol', source: 'restr', layout: {
       'icon-image': ['get', 'icon'], 'icon-allow-overlap': true, 'icon-ignore-placement': true,
       'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.32, 13, 0.5, 17, 0.75] } });
     tuneStyle();
     if (route) map.getSource('route').setData({ type: 'Feature', geometry: route.geo, properties: {} });
-    drawAvoids(); drawLugares(); refreshRestr();
+    drawAvoids(); drawLugares(); drawRadares(); refreshRestr();
     if (handlersOn) return; handlersOn = true;
     map.on('click', 'lugares', e => { if (mode !== 'home' && mode !== 'results') return; e.preventDefault(); const l = lugares.find(x => x.id === e.features[0].properties.id); if (l) lugarPopup(l); });
     map.on('click', 'restr', e => { e.preventDefault(); const r = rows[e.features[0].properties.i]; restrPopup(r); });
@@ -213,7 +219,7 @@
     }
     me = { lat: c.latitude, lon: c.longitude, speed: speed || 0, heading: heading ?? (me && me.heading) ?? 0, at: now };
     lastFix = { lat: me.lat, lon: me.lon, at: now };
-    sendPos(c.accuracy);
+    sendPos(c.accuracy); checkCameras();
     if (mode === 'nav') navTick(); else setTarget(me.lat, me.lon, me.heading || 0);
   }
 
@@ -849,7 +855,8 @@
     if (NUBE) {
       $('sec-account').hidden = false; $('sec-key').hidden = true; $('b-add-truck').hidden = true;
       $('acc-name').textContent = prof ? `${prof.nombre}${prof.usuario ? ' (' + prof.usuario + ')' : ''}` : 'Sin conexión';
-      $('b-panel').hidden = !(prof && prof.rol === 'dueno');
+      $('b-panel').hidden = !(prof && (prof.rol === 'dueno' || prof.rol === 'admin'));
+      $('cam-count').textContent = radares.length ? `${radares.length} fotomultas cargadas. Avisa a unos 500 metros y suena si vas más rápido que la máxima.` : 'Todavía no hay fotomultas cargadas.';
       $('s-speed').disabled = true; $('speed-note').textContent = 'km/h. La pone el dueño en el panel. Avisa con sonido y voz si el camión la pasa.';
       $('trucks-note').hidden = false;
     }
@@ -934,6 +941,7 @@
       store.set('avoids', avoids); drawAvoids();
     }
     if (!via.error) { viajes = via.data; store.set('viajes', viajes); }
+    loadRadares();
     if (mode === 'home') renderFavs();
   }
 
@@ -954,7 +962,51 @@
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ajustes' }, later)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'camiones' }, later)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'lugares' }, later)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'radares' }, () => { clearTimeout(camT); camT = setTimeout(loadRadares, 2000); })
       .subscribe();
+  }
+
+  // ---------- Fotomultas ----------
+  let camT = 0;
+  async function loadRadares() {
+    if (!NUBE || !session) return;
+    const out = [];
+    for (let from = 0; ; from += 1000) {   // de a 1000 (límite del servidor)
+      const { data, error } = await NUBE.sb.from('radares').select('id, lat, lon, maxima').eq('activo', true).order('id').range(from, from + 999);
+      if (error) return;               // sin señal: quedan las guardadas en el celular
+      out.push(...data);
+      if (data.length < 1000) break;
+    }
+    radares = out; store.set('radares', radares); drawRadares();
+  }
+  function drawRadares() {
+    const src = map.getSource && map.getSource('radares'); if (!src) return;
+    src.setData({ type: 'FeatureCollection', features: radares.map(r => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [r.lon, r.lat] }, properties: { icon: 'cm|' + (r.maxima || '?') } })) });
+  }
+  // Avisa cuando hay una fotomulta adelante (en el sentido en que va el camión): a unos 500 m, y suena si al acercarse va más rápido
+  const camWarn = {};
+  function checkCameras() {
+    if (!radares.length || !me || (me.speed || 0) < 20) return;
+    const v = Math.round(me.speed), head = me.heading || 0, now = Date.now();
+    for (const r of radares) {
+      if (Math.abs(r.lat - me.lat) > 0.006 || Math.abs(r.lon - me.lon) > 0.008) continue;   // lejos (~600 m)
+      const d = dist([me.lat, me.lon], [r.lat, r.lon]);
+      if (d > 520 || d < 15) continue;
+      const delta = Math.abs(((bearing([me.lat, me.lon], [r.lat, r.lon]) - head + 540) % 360) - 180);
+      if (delta > (d < 120 ? 50 : 28)) continue;                                              // no está adelante
+      const w = camWarn[r.id] || (camWarn[r.id] = { at: 0, lvl: 0 });
+      if (now - w.at > 8 * 60 * 1000) w.lvl = 0;
+      const max = r.maxima, metros = Math.max(50, Math.round(d / 50) * 50);
+      if (w.lvl < 1) {
+        w.lvl = 1; w.at = now;
+        showAlert(`📷 Fotomulta a ${metros} m${max ? ' · máx. ' + max + ' km/h' : ''}`, 'orange');
+        speak(`Atención. Fotomulta a ${metros} metros.${max ? ' Máxima ' + max + '.' : ''}`);
+      } else if (w.lvl < 2 && d < 250 && max && v > max) {
+        w.lvl = 2; w.at = now; beep();
+        showAlert(`¡Bajá! Fotomulta adelante · máx. ${max} km/h`);
+        speak(`Bajá la velocidad. Fotomulta. Máxima ${max}.`);
+      }
+    }
   }
 
   // Ubicación en vivo para el panel del dueño (cada 15 s o cada 150 m; en viaje, cada 5 s)
@@ -1015,12 +1067,12 @@
         const dest = byId(v.destino_id), orig = byId(v.origen_id), T = trucks.find(t => t.id === v.camion_id);
         const b = document.createElement('button'); b.type = 'button'; b.className = 'item trip' + (v.estado === 'en_curso' ? ' resume' : '');
         const sub = [fechaCorta(v.fecha), orig ? 'desde ' + orig.nombre : '', T ? T.name : '', v.notas].filter(Boolean).join(' · ');
-        b.innerHTML = `<span class="ico">${v.estado === 'en_curso' ? '▶' : '🚚'}</span><span><span class="t">${esc(dest ? dest.nombre : 'Destino borrado')}</span><br><span class="m">${esc(sub)}</span></span><span class="tag">${v.estado === 'en_curso' ? 'En curso' : 'Ir'}</span>`;
+        b.innerHTML = `<span class="ico">${v.estado === 'en_curso' ? '▶' : '🚚'}</span><span><span class="t">${esc(dest ? nombreLugar(dest.nombre) : 'Destino borrado')}</span><br><span class="m">${esc(sub)}</span></span><span class="tag">${v.estado === 'en_curso' ? 'En curso' : 'Ir'}</span>`;
         b.addEventListener('click', () => {
           if (!dest) { showErr('El destino de este viaje ya no existe. Avisale al dueño.'); return; }
           if (v.camion_id && trucks.some(t => t.id === v.camion_id) && truckId !== v.camion_id) { truckId = v.camion_id; store.set('truckId', truckId); renderTruckChip(); }
           viaje = v;
-          goTo({ label: dest.nombre, lat: dest.lat, lon: dest.lon }, true);
+          goTo({ label: nombreLugar(dest.nombre), lat: dest.lat, lon: dest.lon }, true);
         });
         box.appendChild(b);
       }
@@ -1075,7 +1127,24 @@
     if (lab === 'truck' || lab === 'ONU') { g.save(); g.translate(S / 2, S / 2); g.rotate(-Math.PI / 4); g.fillStyle = '#c8102e'; g.fillRect(-S / 2 + 12, -5, S - 24, 10); g.restore(); }
     return g.getImageData(0, 0, S, S);
   }
-  map.on('styleimagemissing', e => { if (e.id.startsWith('sg|') && !map.hasImage(e.id)) map.addImage(e.id, makeSign(e.id), { pixelRatio: 2 }); });
+  map.on('styleimagemissing', e => {
+    if (map.hasImage(e.id)) return;
+    if (e.id.startsWith('sg|')) map.addImage(e.id, makeSign(e.id), { pixelRatio: 2 });
+    else if (e.id.startsWith('cm|')) map.addImage(e.id, makeCam(e.id), { pixelRatio: 2 });
+  });
+  // Fotomulta: cartel azul con camarita y la velocidad máxima
+  function makeCam(id) {
+    const lab = id.split('|')[1], S = 96, c = document.createElement('canvas'); c.width = c.height = S;
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.beginPath(); g.roundRect(2, 2, S - 4, S - 4, 18); g.fill();
+    g.fillStyle = '#1d3f9a'; g.beginPath(); g.roundRect(8, 8, S - 16, S - 16, 13); g.fill();
+    g.fillStyle = '#fff'; g.beginPath(); g.roundRect(26, 16, 36, 22, 5); g.fill();
+    g.beginPath(); g.moveTo(62, 22); g.lineTo(74, 16); g.lineTo(74, 38); g.lineTo(62, 32); g.fill();
+    g.fillStyle = '#1d3f9a'; g.beginPath(); g.arc(44, 27, 6, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#fff'; g.font = `700 ${lab.length > 2 ? 34 : 38}px "Barlow Condensed", "Arial Narrow", Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(lab, S / 2, 64);
+    return g.getImageData(0, 0, S, S);
+  }
 
   // ---------- Mapa más claro para camioneros ----------
   function vectorSource() {

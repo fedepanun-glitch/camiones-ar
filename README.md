@@ -21,6 +21,8 @@ Sin la nube configurada (ver abajo), la app funciona como antes: todo queda guar
 - **Lugares**: base (Delta Point), clientes y depósitos, buscando la dirección o tocando el mapa.
 - **Calles**: las marcadas como "No puedo pasar", quién y cuándo; se pueden sacar o marcar nuevas.
 - **Ajustes**: velocidad máxima de la empresa.
+- **Fotomultas**: se traen de OpenStreetMap y se cargan a mano las que falten. La app avisa a unos 500 m ("Fotomulta a 400 metros, máxima 130") y suena si el camión va más rápido que la máxima.
+- **Administradores** (en Ajustes): el dueño crea cuentas para administrativos o socios, que entran al panel con email y contraseña, también desde el celular.
 
 La ubicación se manda mientras la app está abierta en el celular del chofer (los navegadores no permiten mandarla con la pantalla apagada o la app cerrada).
 
