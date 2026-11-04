@@ -150,6 +150,17 @@
   </form>
 </dialog>
 
+<!-- Terminar un viaje lejos del destino -->
+<dialog id="end-trip" aria-labelledby="et-title">
+  <form method="dialog" class="dlg">
+    <header class="dlg-head"><h2 id="et-title">¿Terminaste el viaje?</h2></header>
+    <p class="tip" id="et-dest"></p>
+    <button value="fin" class="big go full">Sí, viaje terminado</button>
+    <button value="pausa" class="big gray full">No, lo sigo después</button>
+    <button value="volver" class="big gray full">Volver al mapa</button>
+  </form>
+</dialog>
+
 <!-- Entrar (chofer: usuario + PIN, una sola vez por celular) -->
 <dialog id="login" class="login" aria-labelledby="l-title">
   <form id="f-login" class="dlg" autocomplete="on">
