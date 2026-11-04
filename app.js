@@ -179,6 +179,7 @@
     for (const v of ['home', 'results', 'preview', 'loading']) $('v-' + v).hidden = v !== m;
     const nav = m === 'nav';
     $('turn').hidden = !nav; $('navbar').hidden = !nav;
+    $('b-camara').hidden = !(nav && NUBE);
     if (!nav) { $('alert').hidden = true; $('b-center').hidden = true; setConnector(null); map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 }); map.easeTo({ pitch: 0, bearing: 0, duration: 400 }); }
     if (m === 'home') { renderFavs(); restoreTrip(); }
   }
@@ -280,9 +281,10 @@
     return lat < -21 && lat > -56 && lon < -53 && lon > -74 ? { lat, lon } : null;
   }
   // Pide algo al servicio de rutas: por la función del servidor (nube) o directo con la clave del celular.
-  async function ors(op, { body, params } = {}) {
+  async function ors(op, { body, params, elegir } = {}) {
     if (NUBE) {
-      const r = await NUBE.funcion('rutas', { op, body, params });
+      // elegir: el servidor pide varios caminos y devuelve el mejor para camión (avenidas, Red de Tránsito Pesado)
+      const r = await NUBE.funcion('rutas', { op, body, params, elegir });
       if (r.status === 401) { showLogin(); throw new Error('Tenés que entrar de nuevo con tu usuario y PIN.'); }
       return r;
     }
@@ -449,7 +451,7 @@
       options: { vehicle_type: 'hgv', profile_params: { restrictions: { height: T.h, weight: T.w, length: T.l, width: T.wd, axleload: T.e, hazmat: !!T.hz } } },
     };
     const av = polygonsFor(pts || []); if (av) body.options.avoid_polygons = av;
-    const res = await ors('directions', { body });
+    const res = await ors('directions', { body, elegir: true });
     const d = res.data || {};
     if (!res.ok) {
       const code = d.error && d.error.code;
@@ -463,7 +465,7 @@
     }
     const f = d.features[0];
     return { coords: f.geometry.coordinates.map(([lo, la]) => [la, lo]), steps: f.properties.segments.flatMap(s => s.steps),
-      dist: f.properties.summary.distance || 0, dur: f.properties.summary.duration || 0 };
+      dist: f.properties.summary.distance || 0, dur: f.properties.summary.duration || 0, eleccion: f.properties.eleccion || null };
   }
   const cumOf = coords => { const c = [0]; for (let i = 1; i < coords.length; i++) c.push(c[i - 1] + dist(coords[i - 1], coords[i])); return c; };
 
@@ -526,7 +528,7 @@
     catch (e) { if (e.message !== 'too-long') throw e; r = await stitched(from, to, pts); }
     const cum = cumOf(r.coords);
     const steps = r.steps.map(s => ({ ...s, text: say(s) }));
-    const rt = { from, to, coords: r.coords, cum, steps, total: cum[cum.length - 1], time: r.dur,
+    const rt = { from, to, coords: r.coords, cum, steps, total: cum[cum.length - 1], time: r.dur, eleccion: r.eleccion || null,
       geo: { type: 'LineString', coordinates: r.coords.map(([la, lo]) => [lo, la]) } };
     rt.near = nearRoute(rt, 25);
     return rt;
@@ -581,6 +583,12 @@
     $('dest-name').textContent = to.label;
     $('p-km').textContent = km(route.total);
     $('p-time').textContent = hm(route.time);
+    // Por qué se eligió este camino (avenidas y Red de Tránsito Pesado)
+    const el = route.eleccion;
+    $('p-eleccion').hidden = !el;
+    if (el) $('p-eleccion').textContent = `🚛 Camino para camión: ${Math.round((1 - el.calles) * 100)}% por rutas y avenidas` +
+      (el.enRed != null && el.kmEnZona >= 0.5 ? ` · en Capital, ${Math.round(el.enRed * 100)}% por la Red de Tránsito Pesado` : '') +
+      (el.opciones > 1 ? ' (elegido entre ' + el.opciones + ' caminos)' : '');
     const n = route.near.length;
     $('b-checks').hidden = !n;
     $('b-checks').textContent = n ? `⚠ ${n === 1 ? '1 lugar' : n + ' lugares'} para mirar en el camino` : '';
@@ -1020,6 +1028,23 @@
         speak(`Bajá la velocidad. Fotomulta. Máxima ${max}.`);
       }
     }
+  }
+
+  // Marcar una fotomulta que falta (botón 📷): queda para todos los choferes
+  if (NUBE) {
+    $('b-camara').addEventListener('click', () => { $('cam-dlg').returnValue = ''; $('cam-dlg').showModal(); });
+    $('cam-dlg').addEventListener('close', async () => {
+      const v = $('cam-dlg').returnValue; if (v === '') return;
+      if (!me) { showAlert('Todavía no tengo tu ubicación.', 'orange'); return; }
+      const cerca = radares.find(r => dist([me.lat, me.lon], [r.lat, r.lon]) < 60);
+      if (cerca && (+v === 0 || cerca.maxima === +v)) { showAlert('Esa fotomulta ya estaba cargada. ¡Gracias!', 'orange'); return; }
+      const row = { lat: +me.lat.toFixed(6), lon: +me.lon.toFixed(6), maxima: +v || null, creado_por: session.user.id, nota: 'Marcada desde la app' };
+      const { data, error } = await NUBE.sb.from('radares').insert(row).select('id, lat, lon, maxima').single();
+      if (error) { showAlert('No se pudo marcar (¿hay señal?). Probá de nuevo.', 'orange'); return; }
+      radares.push(data); store.set('radares', radares); drawRadares();
+      camWarn[data.id] = { at: Date.now(), lvl: 2 };   // no avisar de la que se acaba de marcar
+      showAlert(`📷 Fotomulta marcada${+v ? ' (máx. ' + v + ')' : ''}. ¡Gracias!`, 'orange'); speak('Fotomulta marcada. Gracias.');
+    });
   }
 
   // Ubicación en vivo para el panel del dueño (cada 15 s o cada 150 m; en viaje, cada 5 s)

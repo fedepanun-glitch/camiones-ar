@@ -192,3 +192,10 @@ body:not([data-mode="nav"]) .center-btn { display: none; }
 .item .end { border: 2px solid var(--line); background: var(--card); color: var(--ink); border-radius: 999px; padding: 4px 10px; font: 700 .85rem var(--font-body); }
 #end-trip .big { min-height: 56px; }
 #end-trip .big.go { font: 700 1.3rem/1.1 var(--font-body); letter-spacing: 0; min-height: 60px; }
+
+.tip.eleccion { color: var(--ink); background: color-mix(in srgb, var(--go) 12%, var(--card)); border-radius: 12px; padding: 8px 12px; font-weight: 600; }
+
+.cam-btn { position: fixed; z-index: 6; left: max(12px, env(safe-area-inset-left)); bottom: calc(118px + env(safe-area-inset-bottom)); width: 60px; height: 60px; border-radius: 50%; border: 0;
+  background: #1d3f9a; color: #fff; font-size: 1.7rem; box-shadow: 0 4px 14px rgb(0 0 0 / .3); }
+.cam-opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.cam-opts .big { font: 700 1.6rem var(--font-display); }
