@@ -141,3 +141,5 @@ body.lector .side .btn:not([data-fly]):not([data-satfly]):not([data-ruta]):not([
 body.lector .maplibregl-popup .btn { display: none !important; }
 body.lector .tcard input, body.lector .side select[data-cam] { pointer-events: none; opacity: .8; }
 body.lector .side::before { content: "👀 Modo solo mirar: podés ver todo, pero no cambiar nada."; display: block; margin: 10px 0 0; padding: 8px 12px; border-radius: 10px; background: color-mix(in srgb, var(--route) 14%, transparent); font-weight: 600; font-size: .9rem; }
+
+.place.rep { font-size: 20px; background: #fff; border-radius: 50%; width: 30px; height: 30px; display: grid; place-items: center; box-shadow: 0 1px 4px rgb(0 0 0 / .4); }
