@@ -7,7 +7,8 @@ App web para camiones en Argentina: muestra las restricciones de tránsito pesad
 1. Abrí la app desde el celular. En Android, menú ☰ → **Instalar en el celular**; en iPhone, Compartir → Agregar a inicio.
 2. Entrá con el **usuario y PIN** que te dio el dueño. Se hace una sola vez: el celular queda conectado.
 3. Arriba aparecen **Tus viajes**: tocá uno y después **IR**. También podés escribir **¿A dónde vas?**, elegir un lugar de la empresa o tocar el mapa.
-4. Manejando: si la ruta manda por una calle que no se puede, tocá **No puedo pasar**: la app la evita, recalcula y la calle queda marcada para **todos los choferes**. Si el camión pasa la velocidad máxima, suena una alarma, avisa por voz y le llega una alerta al dueño.
+   La ruta se elige pensando en el camión: entre varios caminos posibles, el que menos va por calles chicas y, en Capital, el que más va por la Red de Tránsito Pesado (OpenStreetMap). En la vista previa se ve el porcentaje.
+4. Manejando: si la ruta manda por una calle que no se puede, tocá **No puedo pasar**: la app la evita, recalcula y la calle queda marcada para **todos los choferes**. Si el camión pasa la velocidad máxima, suena una alarma, avisa por voz y le llega una alerta al dueño. Con el botón 📷 el chofer marca una fotomulta que falta, con su máxima.
 5. Al llegar, el viaje queda como terminado solo.
 
 Sin la nube configurada (ver abajo), la app funciona como antes: todo queda guardado en el celular y la clave de rutas se pega en el menú ☰.

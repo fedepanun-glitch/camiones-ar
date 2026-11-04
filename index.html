@@ -76,6 +76,7 @@
   <div class="view" id="v-preview" hidden>
     <div class="dest" id="dest-name"></div>
     <div class="nums"><div><b id="p-km"></b><span>distancia</span></div><div><b id="p-time"></b><span>tiempo</span></div></div>
+    <p class="tip eleccion" id="p-eleccion" hidden></p>
     <button type="button" class="checks" id="b-checks" hidden></button>
     <div class="list" id="checks" hidden></div>
     <button type="button" class="big go full" id="b-go"><span class="go-truck" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M2 7h11v8H2zM13 10h4l3 3v2h-7zM4 17.5a1.6 1.6 0 1 0 3.2 0 1.6 1.6 0 1 0-3.2 0M14 17.5a1.6 1.6 0 1 0 3.2 0 1.6 1.6 0 1 0-3.2 0"/></svg></span>IR</button>
@@ -147,6 +148,21 @@
   <form method="dialog" class="dlg">
     <header class="dlg-head"><h2 id="pt-title">¿Qué camión manejás?</h2><button class="round" value="close" aria-label="Cerrar">✕</button></header>
     <div id="pt-list" class="list"></div>
+  </form>
+</dialog>
+
+<!-- Marcar una fotomulta (chofer) -->
+<button type="button" class="cam-btn" id="b-camara" aria-label="Marcar fotomulta acá" hidden>📷</button>
+<dialog id="cam-dlg" aria-labelledby="cam-title">
+  <form method="dialog" class="dlg">
+    <header class="dlg-head"><h2 id="cam-title">¿Hay una fotomulta acá?</h2></header>
+    <p class="tip">Se marca donde estás ahora y les avisa a todos los choferes. Elegí la velocidad máxima:</p>
+    <div class="cam-opts">
+      <button value="40" class="big gray">40</button><button value="60" class="big gray">60</button><button value="80" class="big gray">80</button>
+      <button value="100" class="big gray">100</button><button value="110" class="big gray">110</button><button value="130" class="big gray">130</button>
+    </div>
+    <button value="0" class="big gray full">No sé la máxima</button>
+    <button value="" class="big gray full">Cancelar</button>
   </form>
 </dialog>
 
