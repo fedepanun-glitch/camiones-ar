@@ -675,14 +675,26 @@
     speak('Vamos. ' + (route.steps[0] ? route.steps[0].text : ''));
     navTick();
   });
-  $('b-stop').addEventListener('click', () => {
+  function stopNav(terminado) {
     try { nav.wake && nav.wake.release(); } catch (e) { /* nada */ }
     try { speechSynthesis.cancel(); } catch (e) { /* nada */ }
     store.set('trip', null);
-    // Si terminó cerca del destino, el viaje queda como terminado
-    if (viaje && route && me && dist([me.lat, me.lon], [route.to.lat, route.to.lon]) < 300) setTripState(viaje, 'terminado');
+    if (viaje && terminado) setTripState(viaje, 'terminado');
     viaje = null; shareRoute(null);
     clearRoute(); setMode('home');
+  }
+  $('b-stop').addEventListener('click', () => {
+    // Cerca del destino: terminado. Lejos y con un viaje asignado: se pregunta (puede haber cambiado algo)
+    const cerca = route && me && dist([me.lat, me.lon], [route.to.lat, route.to.lon]) < 300;
+    if (!viaje || cerca) { stopNav(!!viaje); return; }
+    $('et-dest').textContent = `Viaje a ${route ? route.to.label : 'destino'}. Si el viaje cambió o no se hace, avisale también al dueño.`;
+    $('end-trip').returnValue = '';
+    $('end-trip').showModal();
+  });
+  $('end-trip').addEventListener('close', () => {
+    const r = $('end-trip').returnValue;
+    if (r === 'fin') { stopNav(true); speak('Viaje terminado.'); }
+    else if (r === 'pausa') stopNav(false);       // queda "en curso" para seguirlo después
   });
 
   // "No puedo pasar": evita la próxima maniobra y recalcula desde donde está el camión
@@ -1065,10 +1077,16 @@
       const h = document.createElement('h3'); h.className = 'list-title'; h.textContent = 'Tus viajes'; box.appendChild(h);
       for (const v of viajes) {
         const dest = byId(v.destino_id), orig = byId(v.origen_id), T = trucks.find(t => t.id === v.camion_id);
-        const b = document.createElement('button'); b.type = 'button'; b.className = 'item trip' + (v.estado === 'en_curso' ? ' resume' : '');
+        const b = document.createElement('div'); b.setAttribute('role', 'button'); b.tabIndex = 0; b.className = 'item trip' + (v.estado === 'en_curso' ? ' resume' : '');
         const sub = [fechaCorta(v.fecha), orig ? 'desde ' + orig.nombre : '', T ? T.name : '', v.notas].filter(Boolean).join(' · ');
-        b.innerHTML = `<span class="ico">${v.estado === 'en_curso' ? '▶' : '🚚'}</span><span><span class="t">${esc(dest ? nombreLugar(dest.nombre) : 'Destino borrado')}</span><br><span class="m">${esc(sub)}</span></span><span class="tag">${v.estado === 'en_curso' ? 'En curso' : 'Ir'}</span>`;
-        b.addEventListener('click', () => {
+        b.innerHTML = `<span class="ico">${v.estado === 'en_curso' ? '▶' : '🚚'}</span><span><span class="t">${esc(dest ? nombreLugar(dest.nombre) : 'Destino borrado')}</span><br><span class="m">${esc(sub)}</span></span>` +
+          (v.estado === 'en_curso' ? '<span class="trip-acts"><span class="tag">Seguir</span><button type="button" class="end">Terminar</button></span>' : '<span class="tag">Ir</span>');
+        b.addEventListener('keydown', ev => { if (ev.key === 'Enter') b.click(); });
+        b.addEventListener('click', ev => {
+          if (ev.target.closest('.end')) {
+            if (!confirm(`¿Terminaste el viaje a ${dest ? nombreLugar(dest.nombre) : 'este destino'}? Deja de aparecer en tus viajes.`)) return;
+            setTripState(v, 'terminado').then(renderFavs); renderFavs(); return;
+          }
           if (!dest) { showErr('El destino de este viaje ya no existe. Avisale al dueño.'); return; }
           if (v.camion_id && trucks.some(t => t.id === v.camion_id) && truckId !== v.camion_id) { truckId = v.camion_id; store.set('truckId', truckId); renderTruckChip(); }
           viaje = v;

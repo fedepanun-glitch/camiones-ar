@@ -187,3 +187,8 @@ body:not([data-mode="nav"]) .center-btn { display: none; }
 .field { display: flex; flex-direction: column; gap: 6px; font-weight: 700; color: var(--muted); }
 .field input { font: 700 1.4rem var(--font-body); color: var(--ink); background: var(--bg); border: 2px solid var(--line); border-radius: 14px; padding: 14px 16px; width: 100%; }
 .big:disabled { opacity: .6; }
+
+.trip-acts { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.item .end { border: 2px solid var(--line); background: var(--card); color: var(--ink); border-radius: 999px; padding: 4px 10px; font: 700 .85rem var(--font-body); }
+#end-trip .big { min-height: 56px; }
+#end-trip .big.go { font: 700 1.3rem/1.1 var(--font-body); letter-spacing: 0; min-height: 60px; }

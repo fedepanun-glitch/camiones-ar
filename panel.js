@@ -287,6 +287,7 @@
       const rutaTxt = v.ruta_km ? `${fmt(Math.round(v.ruta_km))} km · ${durTxt(v.ruta_min)}${v.ruta_origen === 'chofer' ? ' (la que sigue el chofer)' : ' (planeada)'}` : '';
       const sub = [fechaTxt(v.fecha), c ? c.nombre : 'Sin chofer', t && t.nombre, o && 'desde ' + o.nombre, rutaTxt, v.notas].filter(Boolean).join(' · ');
       const acts = (v.ruta ? `<button type="button" class="btn ghost sm" data-ruta="${v.id}">Ver ruta</button>` : '') +
+        (v.estado === 'en_curso' ? `<button type="button" class="btn ghost sm" data-fin="${v.id}">Terminar</button>` : '') +
         (v.estado === 'pendiente' || v.estado === 'en_curso' ? `<button type="button" class="btn danger sm" data-cancel="${v.id}">Cancelar</button>` : `<button type="button" class="btn danger sm" data-del="${v.id}">Borrar</button>`);
       return `<div class="row stack"><span class="ico">${d ? (TIPO[d.tipo] || TIPO.otro)[0] : '❓'}</span><span><span class="t">${esc(d ? d.nombre.replace(VIAJE_PREF, '') : 'Destino borrado')} <span class="state ${v.estado}">${ESTADO[v.estado]}</span></span><br><span class="m">${esc(sub)}</span></span><span class="acts">${acts}</span></div>`;
     }).join('');
@@ -387,6 +388,12 @@
   $('viajes').addEventListener('click', async e => {
     const r = e.target.closest('[data-ruta]');
     if (r) { const v = byId(D.viajes, r.dataset.ruta); if (v) showPlan(v); return; }
+    const fin = e.target.closest('[data-fin]');
+    if (fin && confirm('¿Dar este viaje por terminado?')) {
+      await q(sb.rpc('cambiar_estado_viaje', { p_viaje: fin.dataset.fin, p_estado: 'terminado' }), 'No se pudo terminar');
+      const v = byId(D.viajes, fin.dataset.fin); if (v) { v.estado = 'terminado'; v.terminado = new Date().toISOString(); }
+      renderViajes(); renderLive(); toast('Viaje terminado.'); return;
+    }
     const c = e.target.closest('[data-cancel]'), d = e.target.closest('[data-del]');
     if (c && confirm('¿Cancelar este viaje? Al chofer le deja de aparecer.')) { const row = await q(sb.from('viajes').update({ estado: 'cancelado' }).eq('id', c.dataset.cancel).select().single(), 'No se pudo cancelar'); upsertLocal('viajes', row); renderViajes(); }
     if (d && confirm('¿Borrar este viaje del historial?')) { await q(sb.from('viajes').delete().eq('id', d.dataset.del), 'No se pudo borrar'); D.viajes = D.viajes.filter(v => v.id !== d.dataset.del); renderViajes(); }
