@@ -4,9 +4,9 @@
 // Datos © colaboradores de OpenStreetMap, licencia ODbL.
 import { createClient } from 'npm:@supabase/supabase-js@2.110.0';
 
-const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
+const OVERPASS = ['https://maps.mail.ru/osm/tools/overpass/api/interpreter', 'https://overpass-api.de/api/interpreter'];
 // Rectángulo que cubre Argentina (más rápido que buscar por el "área" del país)
-const QUERY = `[out:json][timeout:100][bbox:-55.2,-73.6,-21.7,-53.5];
+const QUERY = `[out:json][timeout:65][bbox:-55.2,-73.6,-21.7,-53.5];
 (
   node["highway"="speed_camera"];
   relation["type"="enforcement"]["enforcement"~"^(maxspeed|average_speed)$"];
@@ -45,7 +45,8 @@ const dentro = (lat: number, lon: number) => lat >= -56 && lat <= -21 && lon >= 
 type El = { type: string; id: number; lat?: number; lon?: number; tags?: Record<string, string>; members?: { type: string; ref: number; role: string }[] };
 export function convertir(elements: El[]) {
   const nodos = new Map<number, El>();
-  for (const e of elements) if (e.type === 'node') nodos.set(e.id, e);
+  // Un mismo nodo puede venir dos veces (con datos y "esqueleto" sin datos): se queda el que tiene datos
+  for (const e of elements) if (e.type === 'node') { const prev = nodos.get(e.id); if (!prev || (!prev.tags && e.tags)) nodos.set(e.id, e); }
   const out = new Map<string, Record<string, unknown>>();
   const usados = new Set<number>();
   // Relaciones de control de velocidad: el "device" es la cámara, el límite está en la relación
@@ -79,7 +80,7 @@ Deno.serve(async req => {
   let datos: { elements?: El[] } | null = null, ultimoError = '';
   for (const url of OVERPASS) {
     try {
-      const r = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: QUERY }), signal: AbortSignal.timeout(110000),
+      const r = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: QUERY }), signal: AbortSignal.timeout(70000),
         headers: { 'User-Agent': 'CamionesAR/1.0 (gestion de flota)' } });
       if (!r.ok) { ultimoError = `OpenStreetMap respondió ${r.status}`; continue; }
       datos = await r.json(); break;
