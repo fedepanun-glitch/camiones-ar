@@ -63,7 +63,7 @@
     s = s.replace(',', '.').replace(/\s*(m|mts|metros|t|tn|ton|toneladas)\.?$/, '');
     return /^\d+(\.\d+)?$/.test(s) ? parseFloat(s) : NaN;
   }
-  let rows = [];
+  let rows = [], oficialRows = [];
   function verdict(r) {
     const T = truck();
     if (r.t === 'P') return 'no';
@@ -157,7 +157,8 @@
     new maplibregl.Popup({ maxWidth: '300px' }).setLngLat([r.lon, r.lat]).setHTML(`<div class="pop">${signHTML(r)}<div>
       <h3>${esc(r.street)}</h3><p><b>${vlabel(r)}</b> · ${describe(r)}</p>
       <p class="m">${esc([r.loc, r.prov].filter(Boolean).join(', '))}</p>
-      <p class="m"><a href="https://www.openstreetmap.org/${r.et}/${r.id}" target="_blank" rel="noopener">Ver en OpenStreetMap</a></p></div></div>`).addTo(map);
+      <p class="m">${r.oficial ? `Fuente: <a href="${esc(r.fuenteUrl)}" target="_blank" rel="noopener">${esc(r.oficial)}</a>${r.nota ? ' · ' + esc(r.nota) : ''}`
+        : `<a href="https://www.openstreetmap.org/${r.et}/${r.id}" target="_blank" rel="noopener">Ver en OpenStreetMap</a>`}</p></div></div>`).addTo(map);
   }
 
   // Restricciones visibles: en vista previa / navegación, las que tocan la ruta; si se pide, todas las que afectan.
@@ -420,7 +421,9 @@
     // cortes reportados por los choferes y puentes más bajos que el camión
     const T = truck();
     const rep = NUBE ? reportes.filter(r => r.tipo === 'corte' || (r.tipo === 'altura' && r.dato && T && T.h >= r.dato - 0.1)).map(r => ({ lat: r.lat, lon: r.lon })) : [];
-    return avoids.concat(own.map(o => ({ lat: +o.lat, lon: +o.lon })), rep);
+    // restricciones oficiales (p. ej. puentes con límite de peso de Vialidad) que este camión no cumple
+    const ofi = rows.filter(r => r.oficial && verdict(r) === 'no').map(r => ({ lat: r.lat, lon: r.lon }));
+    return avoids.concat(own.map(o => ({ lat: +o.lat, lon: +o.lon })), rep, ofi);
   }
   function polygonsFor(pts) {
     if (!pts.length) return null;
@@ -972,7 +975,7 @@
       store.set('avoids', avoids); drawAvoids();
     }
     if (!via.error) { viajes = via.data; store.set('viajes', viajes); }
-    loadRadares(); loadReportes();
+    loadRadares(); loadReportes(); loadOficiales();
     if (mode === 'home') renderFavs();
   }
 
@@ -1039,6 +1042,27 @@
         speak(`Bajá la velocidad. Fotomulta. Máxima ${max}.`);
       }
     }
+  }
+
+  // ---------- Restricciones oficiales (normativa con su fuente) ----------
+  // Se suman a las de OpenStreetMap: se ven como carteles, se avisan en la ruta y se esquivan si el camión no cumple.
+  async function loadOficiales() {
+    if (!NUBE || !session) return;
+    let data = store.get('oficiales', null);
+    const res = await NUBE.sb.from('restricciones_oficiales').select('id, tipo, ruta, km, provincia, nombre, valor, valor_eje, lat, lon, nota, fuente, fuente_url').eq('activo', true).not('lat', 'is', null).limit(5000);
+    if (!res.error) { data = res.data; store.set('oficiales', data); }
+    if (!data) return;
+    oficialRows = [];
+    for (const o of data) {
+      const t = o.tipo === 'peso' ? 'W' : o.tipo === 'peso_eje' ? 'E' : o.tipo === 'altura' ? 'A' : o.tipo === 'largo' ? 'L' : 'P';
+      const num = t === 'E' ? o.valor_eje : o.valor;
+      const base = { id: o.id, et: 'node', prov: o.provincia, loc: [o.ruta, o.km != null ? 'km ' + fmt(o.km) : ''].filter(Boolean).join(' '), street: o.nombre || 'Puente',
+        raw: num, num: num == null ? NaN : +num, lat: o.lat, lon: o.lon, oficial: o.fuente, fuenteUrl: o.fuente_url, nota: o.nota, dubious: false };
+      oficialRows.push({ ...base, t });
+      if (t === 'W' && o.valor_eje) oficialRows.push({ ...base, id: o.id + 'e', t: 'E', raw: o.valor_eje, num: +o.valor_eje });   // también límite por eje
+    }
+    rows = rows.filter(r => !r.oficial).concat(oficialRows);
+    refreshRestr();
   }
 
   // ---------- Reportes de los choferes (botón ⚠️) ----------
@@ -1405,7 +1429,7 @@
       const num = parseVal(t, raw);
       return { id, et: et === 'w' ? 'way' : 'node', prov: d.provs[pi], loc, street, t, raw, num, lat, lon, segs,
         dubious: (t in RANGE) && (!Number.isFinite(num) || num < RANGE[t][0] || num > RANGE[t][1]) };
-    });
+    }).concat(oficialRows);
     ready.then(refreshRestr);
   }).catch(() => showErr('No pude cargar las restricciones. Revisá la conexión.'));
   getMe().then(p => map.jumpTo({ center: [p.lon, p.lat], zoom: 14 })).catch(() => {});
