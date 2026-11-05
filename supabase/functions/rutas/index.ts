@@ -25,9 +25,9 @@ const json = (body: unknown, status = 200) =>
 
 // ---------- Elegir el camino mejor para camión ----------
 // Se piden hasta 3 caminos y se elige el que menos va por calles chicas y, dentro de las ciudades con
-// Red de Tránsito Pesado (CABA), el que más va por esa red. Aunque tarde unos minutos más.
+// Red de Tránsito Pesado (CABA, Quilmes y otras ciudades cargadas), el que más va por esa red. Aunque tarde unos minutos más.
 const CEL = 0.002;                       // grilla de ~200 m para buscar rápido los tramos de la red
-type Red = { grid: Map<string, number[][]>; zonas: number[][]; caja: number[] };
+type Red = { grid: Map<string, number[][]>; zonas: number[][]; caja: number[]; caba: number[][] };
 let red: Red | null = null, redAt = 0;
 const metros = (lon1: number, lat1: number, lon2: number, lat2: number) => {
   const k = Math.PI / 180, x = (lon2 - lon1) * k * Math.cos((lat1 + lat2) / 2 * k), y = (lat2 - lat1) * k;
@@ -52,19 +52,20 @@ async function cargarRed(): Promise<Red> {
     if (data.length < 1000) break;
   }
   // Bordes de las zonas (los tramos del límite, en cualquier orden: alcanza para saber si un punto está adentro)
-  const zonas: number[][] = []; const caja = [180, 90, -180, -90];
-  const { data: zs } = await supabase.from('zonas').select('anillos');
+  const zonas: number[][] = [], caba: number[][] = []; const caja = [180, 90, -180, -90];
+  const { data: zs } = await supabase.from('zonas').select('id, anillos');
   for (const z of zs || []) for (const lin of z.anillos as number[][][]) for (let i = 1; i < lin.length; i++) {
-    zonas.push([lin[i - 1][0], lin[i - 1][1], lin[i][0], lin[i][1]]);
+    const sg = [lin[i - 1][0], lin[i - 1][1], lin[i][0], lin[i][1]];
+    zonas.push(sg); if (z.id === 'caba') caba.push(sg);
     caja[0] = Math.min(caja[0], lin[i][0]); caja[1] = Math.min(caja[1], lin[i][1]); caja[2] = Math.max(caja[2], lin[i][0]); caja[3] = Math.max(caja[3], lin[i][1]);
   }
-  red = { grid, zonas, caja }; redAt = Date.now();
+  red = { grid, zonas, caja, caba }; redAt = Date.now();
   return red;
 }
-function enZona(lon: number, lat: number, r: Red) {
-  if (!r.zonas.length || lon < r.caja[0] || lon > r.caja[2] || lat < r.caja[1] || lat > r.caja[3]) return false;
+function enZona(lon: number, lat: number, r: Red, bordes = r.zonas) {
+  if (!bordes.length || lon < r.caja[0] || lon > r.caja[2] || lat < r.caja[1] || lat > r.caja[3]) return false;
   let dentro = false;
-  for (const [x1, y1, x2, y2] of r.zonas) if ((y1 > lat) !== (y2 > lat) && lon < (x2 - x1) * (lat - y1) / (y2 - y1) + x1) dentro = !dentro;
+  for (const [x1, y1, x2, y2] of bordes) if ((y1 > lat) !== (y2 > lat) && lon < (x2 - x1) * (lat - y1) / (y2 - y1) + x1) dentro = !dentro;
   return dentro;
 }
 function cercaDeRed(lon: number, lat: number, r: Red) {
@@ -86,19 +87,19 @@ function puntuar(f: any, r: Red, bitren = false) {
   // Tramos por ruta/autopista principal (tipo 1): cuentan como red aunque OpenStreetMap no los marque
   const principal = new Uint8Array(c.length);
   for (const [a, b, v] of (f.properties?.extras?.waytype?.values || []) as number[][]) if (v === 1) for (let i = a; i <= b && i < c.length; i++) principal[i] = 1;
-  let dentro = 0, fuera = 0;
+  let dentro = 0, fuera = 0, enCaba = 0;
   for (let i = 1; i < c.length; i++) {
     const lon = (c[i - 1][0] + c[i][0]) / 2, lat = (c[i - 1][1] + c[i][1]) / 2;
     if (!enZona(lon, lat, r)) continue;
     const m = metros(c[i - 1][0], c[i - 1][1], c[i][0], c[i][1]);
-    dentro += m; if (!(principal[i - 1] && principal[i]) && !cercaDeRed(lon, lat, r)) fuera += m;
+    dentro += m; if (bitren && enZona(lon, lat, r, r.caba)) enCaba += m; if (!(principal[i - 1] && principal[i]) && !cercaDeRed(lon, lat, r)) fuera += m;
   }
   const fueraRed = dentro > 0 ? fuera / dentro : 0;
   // Bitrenes (22,40 m o más): en CABA solo pueden usar corredores específicos (Ley 6675, art. 9.10.6 del Código de Tránsito):
   // se prefiere fuertemente el camino que menos entra a la ciudad.
   const total = f.properties?.summary?.distance || 1;
-  const enCiudad = bitren ? dentro / total : 0;
-  return { costo: dur * (1 + 0.8 * calles + 2 * fueraRed + 6 * enCiudad), calles: +calles.toFixed(3), enRed: dentro > 0 ? +(1 - fueraRed).toFixed(3) : null, kmEnZona: +(dentro / 1000).toFixed(1) };
+  const enCiudad = bitren ? enCaba / total : 0;
+  return { costo: dur * (1 + 0.8 * calles + 2 * fueraRed + 6 * enCiudad), calles: +calles.toFixed(3), enRed: dentro > 0 ? +(1 - fueraRed).toFixed(3) : null, kmEnZona: +(dentro / 1000).toFixed(1), kmEnCaba: +(enCaba / 1000).toFixed(1) };
 }
 
 const supabase = createClient(Deno.env.get('SUPABASE_URL')!, (Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY'))!, { auth: { persistSession: false } });
@@ -144,7 +145,7 @@ Deno.serve(async req => {
           const d = await upstream.json();
           if (Array.isArray(d.features) && d.features.length) {
             let r: Red | null = null; try { r = await cargarRed(); } catch { /* sin red: se elige solo por avenidas */ }
-            const vac: Red = { grid: new Map(), zonas: [], caja: [0, 0, 0, 0] };
+            const vac: Red = { grid: new Map(), zonas: [], caja: [0, 0, 0, 0], caba: [] };
             const bitren = Number((msg as { camion?: { largo?: number } }).camion?.largo) >= 22.4;
             const notas = d.features.map((f: unknown) => puntuar(f, r || vac, bitren));
             let mejor = 0; notas.forEach((n: { costo: number }, i: number) => { if (n.costo < notas[mejor].costo) mejor = i; });

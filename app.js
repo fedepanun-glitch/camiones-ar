@@ -597,12 +597,13 @@
     const el = route.eleccion;
     $('p-eleccion').hidden = !el;
     if (el) $('p-eleccion').textContent = `🚛 Camino para camión: ${Math.round((1 - el.calles) * 100)}% por rutas y avenidas` +
-      (el.enRed != null && el.kmEnZona >= 0.5 ? ` · en Capital, ${Math.round(el.enRed * 100)}% por la Red de Tránsito Pesado` : '') +
+      (el.enRed != null && el.kmEnZona >= 0.5 ? ` · en ciudad, ${Math.round(el.enRed * 100)}% por la red oficial de tránsito pesado` : '') +
       (el.opciones > 1 ? ' (elegido entre ' + el.opciones + ' caminos)' : '');
     // Bitrén entrando a Capital: solo corredores autorizados (Ley 6675 de CABA)
     const T = truck();
-    $('p-bitren').hidden = !(el && T && T.l >= 22.4 && el.kmEnZona >= 0.3);
-    if (!$('p-bitren').hidden) $('p-bitren').textContent = `⚠️ Bitrén en Capital: por ley (Ley 6675, art. 9.10.6) un bitrén solo puede circular por los corredores autorizados hacia el Puerto o el Centro de Transferencia de Cargas (Gral. Paz calzada pesada, Lugones, Illia, Paseo del Bajo, AU 25 de Mayo, Perito Moreno, Dellepiane, Cámpora, Coronel Roca, Pergamino, 27 de Febrero). Esta ruta pasa ${fmt(el.kmEnZona)} km por Capital: revisala antes de salir.`;
+    const kmCaba = el ? (el.kmEnCaba ?? el.kmEnZona) : 0;
+    $('p-bitren').hidden = !(el && T && T.l >= 22.4 && kmCaba >= 0.3);
+    if (!$('p-bitren').hidden) $('p-bitren').textContent = `⚠️ Bitrén en Capital: por ley (Ley 6675, art. 9.10.6) un bitrén solo puede circular por los corredores autorizados hacia el Puerto o el Centro de Transferencia de Cargas (Gral. Paz calzada pesada, Lugones, Illia, Paseo del Bajo, AU 25 de Mayo, Perito Moreno, Dellepiane, Cámpora, Coronel Roca, Pergamino, 27 de Febrero). Esta ruta pasa ${fmt(kmCaba)} km por Capital: revisala antes de salir.`;
     const n = route.near.length;
     $('b-checks').hidden = !n;
     $('b-checks').textContent = n ? `⚠ ${n === 1 ? '1 lugar' : n + ' lugares'} para mirar en el camino` : '';
