@@ -78,7 +78,7 @@ function cercaDeRed(lon: number, lat: number, r: Red) {
   return false;
 }
 // deno-lint-ignore no-explicit-any
-function puntuar(f: any, r: Red) {
+function puntuar(f: any, r: Red, bitren = false) {
   const dur = f.properties?.summary?.duration || 0;
   const wt: { value: number; amount: number }[] = f.properties?.extras?.waytype?.summary || [];
   const calles = wt.filter(x => x.value >= 3 && x.value <= 5).reduce((a, x) => a + x.amount, 0) / 100;   // calle, camino de tierra
@@ -94,7 +94,11 @@ function puntuar(f: any, r: Red) {
     dentro += m; if (!(principal[i - 1] && principal[i]) && !cercaDeRed(lon, lat, r)) fuera += m;
   }
   const fueraRed = dentro > 0 ? fuera / dentro : 0;
-  return { costo: dur * (1 + 0.8 * calles + 2 * fueraRed), calles: +calles.toFixed(3), enRed: dentro > 0 ? +(1 - fueraRed).toFixed(3) : null, kmEnZona: +(dentro / 1000).toFixed(1) };
+  // Bitrenes (22,40 m o más): en CABA solo pueden usar corredores específicos (Ley 6675, art. 9.10.6 del Código de Tránsito):
+  // se prefiere fuertemente el camino que menos entra a la ciudad.
+  const total = f.properties?.summary?.distance || 1;
+  const enCiudad = bitren ? dentro / total : 0;
+  return { costo: dur * (1 + 0.8 * calles + 2 * fueraRed + 6 * enCiudad), calles: +calles.toFixed(3), enRed: dentro > 0 ? +(1 - fueraRed).toFixed(3) : null, kmEnZona: +(dentro / 1000).toFixed(1) };
 }
 
 const supabase = createClient(Deno.env.get('SUPABASE_URL')!, (Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY'))!, { auth: { persistSession: false } });
@@ -114,7 +118,7 @@ Deno.serve(async req => {
 
   const raw = await req.text();
   if (raw.length > 300_000) return json({ error: { message: 'Pedido demasiado grande' } }, 413);
-  let msg: { op?: string; body?: unknown; params?: Record<string, unknown>; elegir?: boolean };
+  let msg: { op?: string; body?: unknown; params?: Record<string, unknown>; elegir?: boolean; camion?: { largo?: number } };
   try { msg = JSON.parse(raw); } catch { return json({ error: { message: 'Pedido inválido' } }, 400); }
 
   const op = msg.op as keyof typeof PATHS;
@@ -141,7 +145,8 @@ Deno.serve(async req => {
           if (Array.isArray(d.features) && d.features.length) {
             let r: Red | null = null; try { r = await cargarRed(); } catch { /* sin red: se elige solo por avenidas */ }
             const vac: Red = { grid: new Map(), zonas: [], caja: [0, 0, 0, 0] };
-            const notas = d.features.map((f: unknown) => puntuar(f, r || vac));
+            const bitren = Number((msg as { camion?: { largo?: number } }).camion?.largo) >= 22.4;
+            const notas = d.features.map((f: unknown) => puntuar(f, r || vac, bitren));
             let mejor = 0; notas.forEach((n: { costo: number }, i: number) => { if (n.costo < notas[mejor].costo) mejor = i; });
             const elegida = d.features[mejor];
             elegida.properties.eleccion = { ...notas[mejor], opciones: d.features.length, mejorQueLaPrimera: mejor !== 0 };
