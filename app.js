@@ -913,6 +913,9 @@
   if (NUBE) {
     $('login').addEventListener('cancel', e => e.preventDefault()); // no se puede cerrar sin entrar
     $('l-user').value = store.get('lastUser', '');
+    // Con email (dueño o administrador) la clave puede tener letras: teclado completo; con usuario de chofer, numérico
+    const tecladoPin = () => { const conEmail = $('l-user').value.includes('@'); $('l-pin').inputMode = conEmail ? 'text' : 'numeric'; $('l-pin').previousSibling && ($('l-pin').closest('label').firstChild.textContent = conEmail ? 'Contraseña' : 'PIN'); };
+    $('l-user').addEventListener('input', tecladoPin); tecladoPin();
     $('f-login').addEventListener('submit', async e => {
       e.preventDefault();
       const u = $('l-user').value.trim(), pin = $('l-pin').value.trim();
