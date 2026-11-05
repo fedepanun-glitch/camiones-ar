@@ -103,11 +103,11 @@ function puntuar(f: any, r: Red, bitren = false) {
 }
 
 // ---------- Zonas prohibidas por ordenanza (p. ej. Rosario: semirremolques y acoplados) ----------
-type Zona = { id: string; nombre: string; anillo: number[][]; largo_min: number | null; peso_min: number | null; nota: string | null; fuente: string | null };
+type Zona = { id: string; nombre: string; anillo: number[][]; largo_min: number | null; peso_min: number | null; nota: string | null; fuente: string | null; horario: { dias?: number[]; franjas?: string[][] } | null };
 let zonasP: Zona[] = [], zonasAt = 0;
 async function cargarZonas(): Promise<Zona[]> {
   if (zonasAt && Date.now() - zonasAt < 600_000) return zonasP;
-  const { data } = await supabase.from('zonas_prohibidas').select('id, nombre, anillo, largo_min, peso_min, nota, fuente').eq('activo', true);
+  const { data } = await supabase.from('zonas_prohibidas').select('id, nombre, anillo, largo_min, peso_min, nota, fuente, horario').eq('activo', true);
   zonasP = (data || []) as Zona[]; zonasAt = Date.now();
   return zonasP;
 }
@@ -119,6 +119,16 @@ function adentro(lon: number, lat: number, anillo: number[][]) {
   }
   return d;
 }
+// ¿Rige ahora? (hora de Argentina, UTC-3). Sin horario: rige siempre.
+function rigeAhora(z: Zona, ahora = new Date()) {
+  const h = z.horario; if (!h) return true;
+  const ar = new Date(ahora.getTime() - 3 * 3600_000);
+  const dia = ar.getUTCDay() || 7, min = ar.getUTCHours() * 60 + ar.getUTCMinutes();
+  if (h.dias && h.dias.length && !h.dias.includes(dia)) return false;
+  if (!h.franjas || !h.franjas.length) return true;
+  const m = (t: string) => { const [a, b] = t.split(':').map(Number); return a * 60 + (b || 0); };
+  return h.franjas.some(([d, a]) => min >= m(d) && min < m(a));
+}
 // Devuelve las zonas que aplican a este camión: las que se esquivan y las que no se pueden esquivar (el viaje empieza o termina adentro)
 function zonasPara(zs: Zona[], camion: { largo?: number; peso?: number } | undefined, coords: number[][]) {
   const largo = Number(camion?.largo) || 0, peso = Number(camion?.peso) || 0;
@@ -127,7 +137,7 @@ function zonasPara(zs: Zona[], camion: { largo?: number; peso?: number } | undef
   // Solo las zonas cerca del viaje (dentro del rectángulo salida-llegada, más ~30 km)
   const M = 0.3, x0 = Math.min(...ext.map(c => c[0])) - M, x1 = Math.max(...ext.map(c => c[0])) + M, y0 = Math.min(...ext.map(c => c[1])) - M, y1 = Math.max(...ext.map(c => c[1])) + M;
   const cerca = (z: Zona) => z.anillo.some(([x, y]) => x >= x0 && x <= x1 && y >= y0 && y <= y1);
-  const aplica = zs.filter(z => ((z.largo_min != null && largo >= z.largo_min) || (z.peso_min != null && peso >= z.peso_min)) && cerca(z));
+  const aplica = zs.filter(z => ((z.largo_min != null && largo >= z.largo_min) || (z.peso_min != null && peso >= z.peso_min)) && cerca(z) && rigeAhora(z));
   const dentro = aplica.filter(z => ext.some(c => adentro(c[0], c[1], z.anillo)));
   return { evitar: aplica.filter(z => !dentro.includes(z)), dentro };
 }
