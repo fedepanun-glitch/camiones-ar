@@ -1083,6 +1083,7 @@
   const REP = {
     bache: ['🕳️', 'Bache'], camino_roto: ['🚧', 'Camino roto'], control: ['👮', 'Control'], balanza: ['⚖️', 'Balanza'],
     corte: ['⛔', 'Corte'], altura: ['🌉', 'Puente bajo'], angosta: ['↔️', 'Calle angosta'], otro: ['⚠️', 'Atención'],
+    inseguro: ['🚨', 'Zona insegura'],
   };
   let reportes = NUBE ? store.get('reportes', []) : [];
   async function loadReportes() {
@@ -1120,6 +1121,11 @@
       repWarn[r.id] = now;
       const [ico, nombre] = REP[r.tipo] || REP.otro, metros = Math.max(50, Math.round(d / 50) * 50);
       const extra = r.tipo === 'altura' && r.dato ? ` de ${fmt(r.dato)} m` : '';
+      if (r.tipo === 'inseguro') {   // marcada por otros choferes (robos, piratas del asfalto)
+        showAlert(`🚨 Zona insegura a ${metros} m: no te detengas`, 'orange');
+        speak(`Precaución. Zona insegura marcada por otros choferes a ${metros} metros. No te detengas.`);
+        continue;
+      }
       showAlert(`${ico} ${nombre}${extra} a ${metros} m`, 'orange');
       speak(`Atención. ${nombre}${extra ? ' de ' + String(r.dato).replace('.', ' coma ') + ' metros' : ''} a ${metros} metros.`);
       if (r.tipo === 'altura' || r.tipo === 'corte') beep();
