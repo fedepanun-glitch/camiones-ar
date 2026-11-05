@@ -286,10 +286,10 @@
     return lat < -21 && lat > -56 && lon < -53 && lon > -74 ? { lat, lon } : null;
   }
   // Pide algo al servicio de rutas: por la función del servidor (nube) o directo con la clave del celular.
-  async function ors(op, { body, params, elegir } = {}) {
+  async function ors(op, { body, params, elegir, camion } = {}) {
     if (NUBE) {
       // elegir: el servidor pide varios caminos y devuelve el mejor para camión (avenidas, Red de Tránsito Pesado)
-      const r = await NUBE.funcion('rutas', { op, body, params, elegir });
+      const r = await NUBE.funcion('rutas', { op, body, params, elegir, camion });
       if (r.status === 401) { showLogin(); throw new Error('Tenés que entrar de nuevo con tu usuario y PIN.'); }
       return r;
     }
@@ -461,7 +461,7 @@
       options: { vehicle_type: 'hgv', profile_params: { restrictions: { height: T.h, weight: T.w, length: T.l, width: T.wd, axleload: T.e, hazmat: !!T.hz } } },
     };
     const av = polygonsFor(pts || []); if (av) body.options.avoid_polygons = av;
-    const res = await ors('directions', { body, elegir: true });
+    const res = await ors('directions', { body, elegir: true, camion: { largo: T.l } });
     const d = res.data || {};
     if (!res.ok) {
       const code = d.error && d.error.code;
@@ -599,6 +599,10 @@
     if (el) $('p-eleccion').textContent = `🚛 Camino para camión: ${Math.round((1 - el.calles) * 100)}% por rutas y avenidas` +
       (el.enRed != null && el.kmEnZona >= 0.5 ? ` · en Capital, ${Math.round(el.enRed * 100)}% por la Red de Tránsito Pesado` : '') +
       (el.opciones > 1 ? ' (elegido entre ' + el.opciones + ' caminos)' : '');
+    // Bitrén entrando a Capital: solo corredores autorizados (Ley 6675 de CABA)
+    const T = truck();
+    $('p-bitren').hidden = !(el && T && T.l >= 22.4 && el.kmEnZona >= 0.3);
+    if (!$('p-bitren').hidden) $('p-bitren').textContent = `⚠️ Bitrén en Capital: por ley (Ley 6675, art. 9.10.6) un bitrén solo puede circular por los corredores autorizados hacia el Puerto o el Centro de Transferencia de Cargas (Gral. Paz calzada pesada, Lugones, Illia, Paseo del Bajo, AU 25 de Mayo, Perito Moreno, Dellepiane, Cámpora, Coronel Roca, Pergamino, 27 de Febrero). Esta ruta pasa ${fmt(el.kmEnZona)} km por Capital: revisala antes de salir.`;
     const n = route.near.length;
     $('b-checks').hidden = !n;
     $('b-checks').textContent = n ? `⚠ ${n === 1 ? '1 lugar' : n + ' lugares'} para mirar en el camino` : '';
