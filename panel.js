@@ -378,7 +378,7 @@
       options: { vehicle_type: 'hgv', profile_params: { restrictions: T ? { height: +T.alto, weight: +T.peso, length: +T.largo, width: +T.ancho, axleload: +T.eje, hazmat: !!T.peligrosa } : {} } } };
     const av = D.bloqueos.map(b => { const dy = 0.00035, dx = 0.00035 / Math.cos(b.lat * Math.PI / 180); return [[[b.lon - dx, b.lat - dy], [b.lon + dx, b.lat - dy], [b.lon + dx, b.lat + dy], [b.lon - dx, b.lat + dy], [b.lon - dx, b.lat - dy]]]; });
     if (av.length) body.options.avoid_polygons = { type: 'MultiPolygon', coordinates: av };
-    const camionInfo = { largo: T ? +T.largo : 0 };
+    const camionInfo = { largo: T ? +T.largo : 0, peso: T ? +T.peso : 0 };
     let r = await N.funcion('rutas', { op: 'directions', body, elegir: true, camion: camionInfo }).catch(() => null);
     if (r && !r.ok && av.length) { delete body.options.avoid_polygons; r = await N.funcion('rutas', { op: 'directions', body, elegir: true, camion: camionInfo }).catch(() => null); } // viajes largos: sin esquivar
     const f = r && r.ok && r.data.features && r.data.features[0];

@@ -102,6 +102,36 @@ function puntuar(f: any, r: Red, bitren = false) {
   return { costo: dur * (1 + 0.8 * calles + 2 * fueraRed + 6 * enCiudad), calles: +calles.toFixed(3), enRed: dentro > 0 ? +(1 - fueraRed).toFixed(3) : null, kmEnZona: +(dentro / 1000).toFixed(1), kmEnCaba: +(enCaba / 1000).toFixed(1) };
 }
 
+// ---------- Zonas prohibidas por ordenanza (p. ej. Rosario: semirremolques y acoplados) ----------
+type Zona = { id: string; nombre: string; anillo: number[][]; largo_min: number | null; peso_min: number | null; nota: string | null; fuente: string | null };
+let zonasP: Zona[] = [], zonasAt = 0;
+async function cargarZonas(): Promise<Zona[]> {
+  if (zonasAt && Date.now() - zonasAt < 600_000) return zonasP;
+  const { data } = await supabase.from('zonas_prohibidas').select('id, nombre, anillo, largo_min, peso_min, nota, fuente').eq('activo', true);
+  zonasP = (data || []) as Zona[]; zonasAt = Date.now();
+  return zonasP;
+}
+function adentro(lon: number, lat: number, anillo: number[][]) {
+  let d = false;
+  for (let i = 1; i < anillo.length; i++) {
+    const [x1, y1] = anillo[i - 1], [x2, y2] = anillo[i];
+    if ((y1 > lat) !== (y2 > lat) && lon < (x2 - x1) * (lat - y1) / (y2 - y1) + x1) d = !d;
+  }
+  return d;
+}
+// Devuelve las zonas que aplican a este camión: las que se esquivan y las que no se pueden esquivar (el viaje empieza o termina adentro)
+function zonasPara(zs: Zona[], camion: { largo?: number; peso?: number } | undefined, coords: number[][]) {
+  const largo = Number(camion?.largo) || 0, peso = Number(camion?.peso) || 0;
+  const ext = [coords[0], coords[coords.length - 1]].filter(Boolean);
+  if (!ext.length) return { evitar: [], dentro: [] };
+  // Solo las zonas cerca del viaje (dentro del rectángulo salida-llegada, más ~30 km)
+  const M = 0.3, x0 = Math.min(...ext.map(c => c[0])) - M, x1 = Math.max(...ext.map(c => c[0])) + M, y0 = Math.min(...ext.map(c => c[1])) - M, y1 = Math.max(...ext.map(c => c[1])) + M;
+  const cerca = (z: Zona) => z.anillo.some(([x, y]) => x >= x0 && x <= x1 && y >= y0 && y <= y1);
+  const aplica = zs.filter(z => ((z.largo_min != null && largo >= z.largo_min) || (z.peso_min != null && peso >= z.peso_min)) && cerca(z));
+  const dentro = aplica.filter(z => ext.some(c => adentro(c[0], c[1], z.anillo)));
+  return { evitar: aplica.filter(z => !dentro.includes(z)), dentro };
+}
+
 const supabase = createClient(Deno.env.get('SUPABASE_URL')!, (Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY'))!, { auth: { persistSession: false } });
 
 Deno.serve(async req => {
@@ -119,7 +149,7 @@ Deno.serve(async req => {
 
   const raw = await req.text();
   if (raw.length > 300_000) return json({ error: { message: 'Pedido demasiado grande' } }, 413);
-  let msg: { op?: string; body?: unknown; params?: Record<string, unknown>; elegir?: boolean; camion?: { largo?: number } };
+  let msg: { op?: string; body?: unknown; params?: Record<string, unknown>; elegir?: boolean; camion?: { largo?: number; peso?: number } };
   try { msg = JSON.parse(raw); } catch { return json({ error: { message: 'Pedido inválido' } }, 400); }
 
   const op = msg.op as keyof typeof PATHS;
@@ -134,13 +164,28 @@ Deno.serve(async req => {
         body: JSON.stringify(b),
       });
       // deno-lint-ignore no-explicit-any
-      const body = (msg.body ?? {}) as any;
-      if (!(msg as { elegir?: boolean }).elegir) upstream = await post(body);
+      let body = (msg.body ?? {}) as any;
+      // Zonas prohibidas para este camión: se suman a las que ya se esquivan
+      let zs: { evitar: Zona[]; dentro: Zona[] } = { evitar: [], dentro: [] };
+      try { zs = zonasPara(await cargarZonas(), msg.camion, body.coordinates || []); } catch { /* sin zonas */ }
+      const sinZonas = body;
+      if (zs.evitar.length) {
+        const prev = body.options?.avoid_polygons;
+        const polys = prev ? (prev.type === 'MultiPolygon' ? prev.coordinates : [prev.coordinates]) : [];
+        body = { ...body, options: { ...(body.options || {}), avoid_polygons: { type: 'MultiPolygon', coordinates: [...polys, ...zs.evitar.map(z => [z.anillo])] } } };
+      }
+      const infoZonas = { evitadas: zs.evitar.map(z => z.nombre), dentro: zs.dentro.map(z => ({ nombre: z.nombre, nota: z.nota, fuente: z.fuente })) };
+      if (!(msg as { elegir?: boolean }).elegir) {
+        upstream = await post(body);
+        if (!upstream.ok && zs.evitar.length) { await upstream.body?.cancel(); upstream = await post(sinZonas); infoZonas.evitadas = []; }
+      }
       else {
         const extra = [...new Set([...(body.extra_info || []), 'waytype'])];
         upstream = await post({ ...body, extra_info: extra, alternative_routes: { target_count: 3, share_factor: 0.6, weight_factor: 1.6 } });
         // Caminos alternativos solo hasta ~100 km: si no se puede, se pide uno solo
         if (!upstream.ok) { await upstream.body?.cancel(); upstream = await post({ ...body, extra_info: extra }); }
+        // Si con las zonas prohibidas no hay camino, se pide sin ellas (y no se informan como evitadas)
+        if (!upstream.ok && zs.evitar.length) { await upstream.body?.cancel(); upstream = await post({ ...sinZonas, extra_info: extra }); infoZonas.evitadas = []; }
         if (upstream.ok) {
           const d = await upstream.json();
           if (Array.isArray(d.features) && d.features.length) {
@@ -151,6 +196,7 @@ Deno.serve(async req => {
             let mejor = 0; notas.forEach((n: { costo: number }, i: number) => { if (n.costo < notas[mejor].costo) mejor = i; });
             const elegida = d.features[mejor];
             elegida.properties.eleccion = { ...notas[mejor], opciones: d.features.length, mejorQueLaPrimera: mejor !== 0 };
+            elegida.properties.zonas = infoZonas;
             d.features = [elegida, ...d.features.filter((_: unknown, i: number) => i !== mejor)];
           }
           return new Response(JSON.stringify(d), { status: 200, headers: { ...CORS, 'Content-Type': 'application/json' } });

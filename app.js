@@ -461,7 +461,7 @@
       options: { vehicle_type: 'hgv', profile_params: { restrictions: { height: T.h, weight: T.w, length: T.l, width: T.wd, axleload: T.e, hazmat: !!T.hz } } },
     };
     const av = polygonsFor(pts || []); if (av) body.options.avoid_polygons = av;
-    const res = await ors('directions', { body, elegir: true, camion: { largo: T.l } });
+    const res = await ors('directions', { body, elegir: true, camion: { largo: T.l, peso: T.w } });
     const d = res.data || {};
     if (!res.ok) {
       const code = d.error && d.error.code;
@@ -475,7 +475,7 @@
     }
     const f = d.features[0];
     return { coords: f.geometry.coordinates.map(([lo, la]) => [la, lo]), steps: f.properties.segments.flatMap(s => s.steps),
-      dist: f.properties.summary.distance || 0, dur: f.properties.summary.duration || 0, eleccion: f.properties.eleccion || null };
+      dist: f.properties.summary.distance || 0, dur: f.properties.summary.duration || 0, eleccion: f.properties.eleccion || null, zonas: f.properties.zonas || null };
   }
   const cumOf = coords => { const c = [0]; for (let i = 1; i < coords.length; i++) c.push(c[i - 1] + dist(coords[i - 1], coords[i])); return c; };
 
@@ -538,7 +538,7 @@
     catch (e) { if (e.message !== 'too-long') throw e; r = await stitched(from, to, pts); }
     const cum = cumOf(r.coords);
     const steps = r.steps.map(s => ({ ...s, text: say(s) }));
-    const rt = { from, to, coords: r.coords, cum, steps, total: cum[cum.length - 1], time: r.dur, eleccion: r.eleccion || null,
+    const rt = { from, to, coords: r.coords, cum, steps, total: cum[cum.length - 1], time: r.dur, eleccion: r.eleccion || null, zonas: r.zonas || null,
       geo: { type: 'LineString', coordinates: r.coords.map(([la, lo]) => [lo, la]) } };
     rt.near = nearRoute(rt, 25);
     return rt;
@@ -604,6 +604,13 @@
     const kmCaba = el ? (el.kmEnCaba ?? el.kmEnZona) : 0;
     $('p-bitren').hidden = !(el && T && T.l >= 22.4 && kmCaba >= 0.3);
     if (!$('p-bitren').hidden) $('p-bitren').textContent = `⚠️ Bitrén en Capital: por ley (Ley 6675, art. 9.10.6) un bitrén solo puede circular por los corredores autorizados hacia el Puerto o el Centro de Transferencia de Cargas (Gral. Paz calzada pesada, Lugones, Illia, Paseo del Bajo, AU 25 de Mayo, Perito Moreno, Dellepiane, Cámpora, Coronel Roca, Pergamino, 27 de Febrero). Esta ruta pasa ${fmt(kmCaba)} km por Capital: revisala antes de salir.`;
+    // Zonas prohibidas por ordenanza (p. ej. Rosario para semirremolques y acoplados)
+    const zn = route.zonas;
+    const zt = [];
+    if (zn && zn.dentro && zn.dentro.length) zt.push(...zn.dentro.map(z => `⛔ El viaje empieza o termina dentro de una zona prohibida para este camión: ${z.nombre}.${z.nota ? ' ' + z.nota : ''}${z.fuente ? ' (' + z.fuente + ')' : ''}`));
+    if (zn && zn.evitadas && zn.evitadas.length) zt.push(`✅ Se esquiva: ${zn.evitadas.join(', ')}.`);
+    $('p-zonas').hidden = !zt.length;
+    $('p-zonas').textContent = zt.join(' ');
     const n = route.near.length;
     $('b-checks').hidden = !n;
     $('b-checks').textContent = n ? `⚠ ${n === 1 ? '1 lugar' : n + ' lugares'} para mirar en el camino` : '';
