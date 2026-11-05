@@ -1,12 +1,12 @@
 // Camiones AR — función "fuentes".
 // Descarga documentos oficiales (normas, anexos en PDF, páginas, planillas), extrae el texto y lo guarda en
-// la tabla "fuentes_docs", para cargar restricciones con su fuente. Solo sitios del gobierno (.gob.ar) y una
+// la tabla "fuentes_docs", para cargar restricciones con su fuente. Solo sitios del gobierno (.gob.ar / .gov.ar) y una
 // lista permitida. La usa el reloj interno de la base (contraseña interna) o el dueño/administrador.
 import { createClient } from 'npm:@supabase/supabase-js@2.110.0';
 import { extractText, getDocumentProxy } from 'npm:unpdf@0.12.1';
 
 const PERMITIDOS = ['bccba.org.ar', 'www.bccba.org.ar'];
-const permitido = (h: string) => h.endsWith('.gob.ar') || h === 'gob.ar' || PERMITIDOS.includes(h);
+const permitido = (h: string) => h.endsWith('.gob.ar') || h.endsWith('.gov.ar') || PERMITIDOS.includes(h);
 const MAX = 25 * 1024 * 1024;
 const CORS = {
   'Access-Control-Allow-Origin': '*',
