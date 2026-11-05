@@ -121,6 +121,10 @@
     map.addSource('route', { type: 'geojson', data: EMPTY });
     map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 12 } });
     map.addLayer({ id: 'route', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': cssVar('--route'), 'line-width': 7 } });
+    map.addSource('reportes', { type: 'geojson', data: EMPTY });
+    map.addLayer({ id: 'reportes', type: 'symbol', source: 'reportes', minzoom: 9, layout: {
+      'icon-image': ['get', 'icon'], 'icon-allow-overlap': true, 'icon-ignore-placement': true,
+      'icon-size': ['interpolate', ['linear'], ['zoom'], 9, 0.28, 13, 0.45, 17, 0.6] } });
     map.addSource('radares', { type: 'geojson', data: EMPTY });
     map.addLayer({ id: 'radares', type: 'symbol', source: 'radares', minzoom: 9, layout: {
       'icon-image': ['get', 'icon'], 'icon-allow-overlap': true, 'icon-ignore-placement': true,
@@ -131,7 +135,7 @@
       'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.32, 13, 0.5, 17, 0.75] } });
     tuneStyle();
     if (route) map.getSource('route').setData({ type: 'Feature', geometry: route.geo, properties: {} });
-    drawAvoids(); drawLugares(); drawRadares(); refreshRestr();
+    drawAvoids(); drawLugares(); drawRadares(); if (NUBE) drawReportes(); refreshRestr();
     if (handlersOn) return; handlersOn = true;
     map.on('click', 'lugares', e => { if (mode !== 'home' && mode !== 'results') return; e.preventDefault(); const l = lugares.find(x => x.id === e.features[0].properties.id); if (l) lugarPopup(l); });
     map.on('click', 'restr', e => { e.preventDefault(); const r = rows[e.features[0].properties.i]; restrPopup(r); });
@@ -220,7 +224,7 @@
     }
     me = { lat: c.latitude, lon: c.longitude, speed: speed || 0, heading: heading ?? (me && me.heading) ?? 0, at: now };
     lastFix = { lat: me.lat, lon: me.lon, at: now };
-    sendPos(c.accuracy); checkCameras();
+    sendPos(c.accuracy); checkCameras(); if (NUBE) checkReportes();
     if (mode === 'nav') navTick(); else setTarget(me.lat, me.lon, me.heading || 0);
   }
 
@@ -413,7 +417,10 @@
 
   function avoidPoints() {
     const own = (window.__OWN || []).filter(o => o.lat !== '' && o.lat != null && Number.isFinite(+o.lat) && Number.isFinite(+o.lon));
-    return avoids.concat(own.map(o => ({ lat: +o.lat, lon: +o.lon })));
+    // cortes reportados por los choferes y puentes más bajos que el camión
+    const T = truck();
+    const rep = NUBE ? reportes.filter(r => r.tipo === 'corte' || (r.tipo === 'altura' && r.dato && T && T.h >= r.dato - 0.1)).map(r => ({ lat: r.lat, lon: r.lon })) : [];
+    return avoids.concat(own.map(o => ({ lat: +o.lat, lon: +o.lon })), rep);
   }
   function polygonsFor(pts) {
     if (!pts.length) return null;
@@ -962,7 +969,7 @@
       store.set('avoids', avoids); drawAvoids();
     }
     if (!via.error) { viajes = via.data; store.set('viajes', viajes); }
-    loadRadares();
+    loadRadares(); loadReportes();
     if (mode === 'home') renderFavs();
   }
 
@@ -984,11 +991,12 @@
       .on('postgres_changes', { event: '*', schema: 'public', table: 'camiones' }, later)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'lugares' }, later)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'radares' }, () => { clearTimeout(camT); camT = setTimeout(loadRadares, 2000); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'reportes' }, () => { clearTimeout(repT); repT = setTimeout(loadReportes, 1500); })
       .subscribe();
   }
 
   // ---------- Fotomultas ----------
-  let camT = 0;
+  let camT = 0, repT = 0;
   async function loadRadares() {
     if (!NUBE || !session) return;
     const out = [];
@@ -1030,9 +1038,81 @@
     }
   }
 
-  // Marcar una fotomulta que falta (botón 📷): queda para todos los choferes
+  // ---------- Reportes de los choferes (botón ⚠️) ----------
+  // bache, camino roto, control, balanza, corte, puente bajo, calle angosta: quedan para todos.
+  // Los cortes se esquivan en las rutas; lo demás se avisa al acercarse.
+  const REP = {
+    bache: ['🕳️', 'Bache'], camino_roto: ['🚧', 'Camino roto'], control: ['👮', 'Control'], balanza: ['⚖️', 'Balanza'],
+    corte: ['⛔', 'Corte'], altura: ['🌉', 'Puente bajo'], angosta: ['↔️', 'Calle angosta'], otro: ['⚠️', 'Atención'],
+  };
+  let reportes = NUBE ? store.get('reportes', []) : [];
+  async function loadReportes() {
+    if (!NUBE || !session) return;
+    const { data, error } = await NUBE.sb.from('reportes').select('id, tipo, lat, lon, dato, confirmaciones, creado_por').eq('activo', true).limit(5000);
+    if (error) return;
+    reportes = data; store.set('reportes', reportes); drawReportes();
+  }
+  function drawReportes() {
+    const src = map.getSource && map.getSource('reportes'); if (!src) return;
+    src.setData({ type: 'FeatureCollection', features: reportes.map(r => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [r.lon, r.lat] }, properties: { icon: 'rp|' + r.tipo, id: r.id } })) });
+  }
+  function makeRep(id) {
+    const t = id.split('|')[1], S = 96, c = document.createElement('canvas'); c.width = c.height = S;
+    const g = c.getContext('2d');
+    g.fillStyle = t === 'corte' ? '#c8102e' : t === 'control' || t === 'balanza' ? '#1d3f9a' : '#e07a00';
+    g.beginPath(); g.arc(S / 2, S / 2, S / 2 - 4, 0, Math.PI * 2); g.fill();
+    g.lineWidth = 6; g.strokeStyle = '#fff'; g.stroke();
+    g.font = '46px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText((REP[t] || REP.otro)[0], S / 2, S / 2 + 3);
+    return g.getImageData(0, 0, S, S);
+  }
+  // Aviso al acercarse a un reporte que está adelante (el puente bajo, solo si el camión no pasa)
+  const repWarn = {};
+  function checkReportes() {
+    if (!reportes.length || !me || (me.speed || 0) < 10) return;
+    const head = me.heading || 0, now = Date.now(), T = truck();
+    for (const r of reportes) {
+      if (Math.abs(r.lat - me.lat) > 0.005 || Math.abs(r.lon - me.lon) > 0.006) continue;
+      const d = dist([me.lat, me.lon], [r.lat, r.lon]);
+      if (d > 420 || d < 15) continue;
+      if (Math.abs(((bearing([me.lat, me.lon], [r.lat, r.lon]) - head + 540) % 360) - 180) > (d < 120 ? 50 : 30)) continue;
+      if (r.tipo === 'altura' && r.dato && T && T.h < r.dato - 0.1) continue;
+      if (repWarn[r.id] && now - repWarn[r.id] < 10 * 60 * 1000) continue;
+      repWarn[r.id] = now;
+      const [ico, nombre] = REP[r.tipo] || REP.otro, metros = Math.max(50, Math.round(d / 50) * 50);
+      const extra = r.tipo === 'altura' && r.dato ? ` de ${fmt(r.dato)} m` : '';
+      showAlert(`${ico} ${nombre}${extra} a ${metros} m`, 'orange');
+      speak(`Atención. ${nombre}${extra ? ' de ' + String(r.dato).replace('.', ' coma ') + ' metros' : ''} a ${metros} metros.`);
+      if (r.tipo === 'altura' || r.tipo === 'corte') beep();
+    }
+  }
+  async function enviarReporte(tipo, dato) {
+    if (!me) { showAlert('Todavía no tengo tu ubicación.', 'orange'); return; }
+    const cerca = reportes.find(r => r.tipo === tipo && dist([me.lat, me.lon], [r.lat, r.lon]) < 80);
+    if (cerca) {   // ya estaba: se confirma (dura más)
+      await NUBE.sb.rpc('confirmar_reporte', { p_id: cerca.id }).then(() => {}, () => {});
+      showAlert(`${REP[tipo][0]} Ya estaba marcado: lo confirmaste. ¡Gracias!`, 'orange'); return;
+    }
+    const { data, error } = await NUBE.sb.from('reportes').insert({ tipo, lat: +me.lat.toFixed(6), lon: +me.lon.toFixed(6), dato: dato || null, creado_por: session.user.id })
+      .select('id, tipo, lat, lon, dato, confirmaciones, creado_por').single();
+    if (error) { showAlert('No se pudo marcar (¿hay señal?). Probá de nuevo.', 'orange'); return; }
+    reportes.push(data); store.set('reportes', reportes); drawReportes(); repWarn[data.id] = Date.now();
+    showAlert(`${REP[tipo][0]} ${REP[tipo][1]} marcado. ¡Gracias!`, 'orange'); speak(`${REP[tipo][1]} marcado. Gracias.`);
+    if (tipo === 'corte' && route && mode === 'nav') { avoids.push({ lat: data.lat, lon: data.lon, label: 'Corte', at: new Date().toISOString().slice(0, 10), mine: true }); reroute(true); }
+  }
   if (NUBE) {
-    $('b-camara').addEventListener('click', () => { $('cam-dlg').returnValue = ''; $('cam-dlg').showModal(); });
+    $('b-camara').addEventListener('click', () => { $('rep-dlg').returnValue = ''; $('rep-dlg').showModal(); });
+    $('rep-dlg').addEventListener('close', () => {
+      const t = $('rep-dlg').returnValue; if (!t) return;
+      if (t === 'fotomulta') { $('cam-dlg').returnValue = ''; $('cam-dlg').showModal(); }
+      else if (t === 'altura') { $('alt-dlg').returnValue = ''; $('alt-dlg').showModal(); }
+      else enviarReporte(t);
+    });
+    $('alt-dlg').addEventListener('close', () => { const v = $('alt-dlg').returnValue; if (v !== '') enviarReporte('altura', +v || null); });
+  }
+
+  // Marcar una fotomulta que falta: queda para todos los choferes
+  if (NUBE) {
     $('cam-dlg').addEventListener('close', async () => {
       const v = $('cam-dlg').returnValue; if (v === '') return;
       if (!me) { showAlert('Todavía no tengo tu ubicación.', 'orange'); return; }
@@ -1195,6 +1275,7 @@
     if (map.hasImage(e.id)) return;
     if (e.id.startsWith('sg|')) map.addImage(e.id, makeSign(e.id), { pixelRatio: 2 });
     else if (e.id.startsWith('cm|')) map.addImage(e.id, makeCam(e.id), { pixelRatio: 2 });
+    else if (e.id.startsWith('rp|')) map.addImage(e.id, makeRep(e.id), { pixelRatio: 2 });
   });
   // Fotomulta: cartel azul con camarita y la velocidad máxima
   function makeCam(id) {

@@ -151,12 +151,38 @@
   </form>
 </dialog>
 
-<!-- Marcar una fotomulta (chofer) -->
-<button type="button" class="cam-btn" id="b-camara" aria-label="Marcar fotomulta acá" hidden>📷</button>
+<!-- Reportar algo en el camino (chofer): queda para todos -->
+<button type="button" class="cam-btn" id="b-camara" aria-label="Reportar algo en el camino" hidden>⚠️</button>
+<dialog id="rep-dlg" aria-labelledby="rep-title">
+  <form method="dialog" class="dlg">
+    <header class="dlg-head"><h2 id="rep-title">¿Qué hay acá?</h2></header>
+    <p class="tip">Se marca donde estás ahora y les avisa a todos los choferes.</p>
+    <div class="rep-opts">
+      <button value="fotomulta" class="big gray">📷<span>Fotomulta</span></button>
+      <button value="bache" class="big gray">🕳️<span>Bache</span></button>
+      <button value="camino_roto" class="big gray">🚧<span>Camino roto</span></button>
+      <button value="control" class="big gray">👮<span>Control</span></button>
+      <button value="balanza" class="big gray">⚖️<span>Balanza</span></button>
+      <button value="corte" class="big gray">⛔<span>Corte</span></button>
+      <button value="altura" class="big gray">🌉<span>Puente bajo</span></button>
+      <button value="angosta" class="big gray">↔️<span>Calle angosta</span></button>
+    </div>
+    <button value="" class="big gray full">Cancelar</button>
+  </form>
+</dialog>
+<dialog id="alt-dlg" aria-labelledby="alt-title">
+  <form method="dialog" class="dlg">
+    <header class="dlg-head"><h2 id="alt-title">¿Qué altura tiene?</h2></header>
+    <div class="cam-opts">
+      <button value="3.5" class="big gray">3,5</button><button value="3.8" class="big gray">3,8</button><button value="4" class="big gray">4,0</button>
+      <button value="4.2" class="big gray">4,2</button><button value="4.5" class="big gray">4,5</button><button value="0" class="big gray">No sé</button>
+    </div>
+    <button value="" class="big gray full">Cancelar</button>
+  </form>
+</dialog>
 <dialog id="cam-dlg" aria-labelledby="cam-title">
   <form method="dialog" class="dlg">
-    <header class="dlg-head"><h2 id="cam-title">¿Hay una fotomulta acá?</h2></header>
-    <p class="tip">Se marca donde estás ahora y les avisa a todos los choferes. Elegí la velocidad máxima:</p>
+    <header class="dlg-head"><h2 id="cam-title">Fotomulta: ¿qué máxima?</h2></header>
     <div class="cam-opts">
       <button value="40" class="big gray">40</button><button value="60" class="big gray">60</button><button value="80" class="big gray">80</button>
       <button value="100" class="big gray">100</button><button value="110" class="big gray">110</button><button value="130" class="big gray">130</button>

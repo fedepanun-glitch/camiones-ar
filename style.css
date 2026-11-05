@@ -199,3 +199,7 @@ body:not([data-mode="nav"]) .center-btn { display: none; }
   background: #1d3f9a; color: #fff; font-size: 1.7rem; box-shadow: 0 4px 14px rgb(0 0 0 / .3); }
 .cam-opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .cam-opts .big { font: 700 1.6rem var(--font-display); }
+
+.rep-opts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.rep-opts .big { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 1.8rem; padding: 10px; min-height: 76px; }
+.rep-opts .big span { font: 700 1rem var(--font-body); }

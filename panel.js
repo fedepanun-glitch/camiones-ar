@@ -589,6 +589,43 @@
     upsertLocal('bloqueos', row, true); renderCalles(); drawBloqueos(); toast('Calle marcada: las rutas de todos la esquivan.');
   }, 'Tocá en el mapa la calle por donde no se puede pasar'));
 
+  // ---------- Reportes de los choferes ----------
+  const REP = { bache: ['🕳️', 'Bache'], camino_roto: ['🚧', 'Camino roto'], control: ['👮', 'Control'], balanza: ['⚖️', 'Balanza'],
+    corte: ['⛔', 'Corte'], altura: ['🌉', 'Puente bajo'], angosta: ['↔️', 'Calle angosta'], otro: ['⚠️', 'Atención'] };
+  D.reportes = [];
+  const repMarkers = new Map();
+  async function loadReportes() {
+    const { data, error } = await sb.from('reportes').select('*').eq('activo', true).order('creado', { ascending: false }).limit(2000);
+    if (error) return;
+    D.reportes = data; renderReportes(); drawReportes();
+  }
+  function renderReportes() {
+    const box = $('reportes'); if (!box) return;
+    if (!D.reportes.length) { box.innerHTML = '<p class="empty">Todavía no hay reportes.</p>'; return; }
+    box.innerHTML = D.reportes.slice(0, 200).map(r => { const [i, n] = REP[r.tipo] || REP.otro;
+      return `<div class="row stack"><span class="ico">${i}</span><span><span class="t">${n}${r.tipo === 'altura' && r.dato ? ' de ' + fmt(r.dato) + ' m' : ''}${r.confirmaciones ? ` · confirmado ${r.confirmaciones} ${r.confirmaciones === 1 ? 'vez' : 'veces'}` : ''}</span><br><span class="m">Marcó ${esc(quien(r.creado_por))} · ${esc(hace(r.creado))}${r.vence ? ' · vence ' + new Date(r.vence).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' }) : ''}</span></span>
+      <span class="acts"><button type="button" class="btn ghost sm" data-rfly="${r.id}">Ver</button><button type="button" class="btn danger sm" data-rdel="${r.id}">Sacar</button></span></div>`; }).join('');
+  }
+  function drawReportes() {
+    const vistos = new Set();
+    for (const r of D.reportes) {
+      vistos.add(r.id);
+      if (repMarkers.has(r.id)) continue;
+      const el = document.createElement('div'); el.className = 'place rep'; el.textContent = (REP[r.tipo] || REP.otro)[0]; el.title = (REP[r.tipo] || REP.otro)[1];
+      repMarkers.set(r.id, new maplibregl.Marker({ element: el }).setLngLat([r.lon, r.lat]).setPopup(new maplibregl.Popup({ offset: 12 }).setText(`${(REP[r.tipo] || REP.otro)[1]} · marcó ${quien(r.creado_por)} · ${hace(r.creado)}`)).addTo(map));
+    }
+    for (const [id, m] of repMarkers) if (!vistos.has(id)) { m.remove(); repMarkers.delete(id); }
+  }
+  $('reportes').addEventListener('click', async e => {
+    const b = e.target.closest('button'); if (!b) return;
+    const r = byId(D.reportes, b.dataset.rfly || b.dataset.rdel); if (!r) return;
+    if (b.dataset.rfly) fly(r.lon, r.lat, 17);
+    if (b.dataset.rdel && confirm(`¿Sacar "${(REP[r.tipo] || REP.otro)[1]}"? Deja de avisarse a los choferes.`)) {
+      await q(sb.from('reportes').update({ activo: false }).eq('id', r.id), 'No se pudo sacar');
+      D.reportes = D.reportes.filter(x => x.id !== r.id); renderReportes(); drawReportes();
+    }
+  });
+
   // ---------- Fotomultas ----------
   D.radares = []; D.admins = [];
   async function loadRadares() {
@@ -813,7 +850,7 @@
   }
   document.addEventListener('click', () => { try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch (e) { /* nada */ } }, { once: true });
 
-  let channel = null, reloadT = 0;
+  let channel = null, reloadT = 0, repT = 0;
   function subscribe() {
     if (channel) return;
     const later = () => { clearTimeout(reloadT); reloadT = setTimeout(loadAll, 800); };
@@ -841,6 +878,10 @@
         later();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'viajes' }, later)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'reportes' }, p => {
+        if (p.eventType === 'INSERT') { const [i, n] = REP[p.new.tipo] || REP.otro; toast(`${i} ${quien(p.new.creado_por)} marcó: ${n}`); }
+        clearTimeout(repT); repT = setTimeout(loadReportes, 800);
+      })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'radares' }, p => { if (p.new.fuente === 'manual' && !byId(D.radares, p.new.id)) { D.radares.push(p.new); renderCams(); drawCams(); } })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rastreo' }, p => {
         if (p.eventType === 'DELETE') D.rastreo = D.rastreo.filter(x => x.asset_id !== p.old.asset_id);
@@ -870,7 +911,7 @@
     $('f-admin').hidden = p.rol !== 'dueno';
     document.body.classList.toggle('lector', !!p.solo_lectura);   // solo mira: se esconden los botones para cambiar cosas
     $('login').hidden = true; $('layout').hidden = false; map.resize();
-    await loadAll(); subscribe(); loadRadares();
+    await loadAll(); subscribe(); loadRadares(); loadReportes();
     if ('Notification' in window && Notification.permission === 'default') document.addEventListener('click', () => Notification.requestPermission().catch(() => {}), { once: true });
   }
   $('f-login').addEventListener('submit', async e => {
