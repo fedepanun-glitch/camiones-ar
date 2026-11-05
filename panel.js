@@ -592,7 +592,7 @@
 
   // ---------- Reportes de los choferes ----------
   const REP = { bache: ['🕳️', 'Bache'], camino_roto: ['🚧', 'Camino roto'], control: ['👮', 'Control'], balanza: ['⚖️', 'Balanza'],
-    corte: ['⛔', 'Corte'], altura: ['🌉', 'Puente bajo'], angosta: ['↔️', 'Calle angosta'], otro: ['⚠️', 'Atención'] };
+    corte: ['⛔', 'Corte'], altura: ['🌉', 'Puente bajo'], angosta: ['↔️', 'Calle angosta'], otro: ['⚠️', 'Atención'], inseguro: ['🚨', 'Zona insegura'] };
   D.reportes = [];
   const repMarkers = new Map();
   async function loadReportes() {
