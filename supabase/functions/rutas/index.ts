@@ -211,6 +211,11 @@ Deno.serve(async req => {
             const elegida = d.features[mejor];
             elegida.properties.eleccion = { ...notas[mejor], opciones: d.features.length, mejorQueLaPrimera: mejor !== 0 };
             elegida.properties.zonas = infoZonas;
+            // Barrios populares (registro oficial RENABAP) a menos de 150 m del camino elegido: la app avisa al acercarse
+            try {
+              const { data: bp } = await supabase.rpc('barrios_en_ruta', { linea: elegida.geometry });
+              elegida.properties.precaucion = bp || [];
+            } catch { elegida.properties.precaucion = []; }
             d.features = [elegida, ...d.features.filter((_: unknown, i: number) => i !== mejor)];
           }
           return new Response(JSON.stringify(d), { status: 200, headers: { ...CORS, 'Content-Type': 'application/json' } });
