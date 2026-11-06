@@ -225,7 +225,7 @@
     }
     me = { lat: c.latitude, lon: c.longitude, speed: speed || 0, heading: heading ?? (me && me.heading) ?? 0, at: now };
     lastFix = { lat: me.lat, lon: me.lon, at: now };
-    sendPos(c.accuracy); checkCameras(); if (NUBE) checkReportes();
+    sendPos(c.accuracy); checkCameras(); if (NUBE) checkReportes(); checkPrecaucion();
     if (mode === 'nav') navTick(); else setTarget(me.lat, me.lon, me.heading || 0);
   }
 
@@ -475,7 +475,7 @@
     }
     const f = d.features[0];
     return { coords: f.geometry.coordinates.map(([lo, la]) => [la, lo]), steps: f.properties.segments.flatMap(s => s.steps),
-      dist: f.properties.summary.distance || 0, dur: f.properties.summary.duration || 0, eleccion: f.properties.eleccion || null, zonas: f.properties.zonas || null };
+      dist: f.properties.summary.distance || 0, dur: f.properties.summary.duration || 0, eleccion: f.properties.eleccion || null, zonas: f.properties.zonas || null, precaucion: f.properties.precaucion || [] };
   }
   const cumOf = coords => { const c = [0]; for (let i = 1; i < coords.length; i++) c.push(c[i - 1] + dist(coords[i - 1], coords[i])); return c; };
 
@@ -528,7 +528,9 @@
       cur = i1;
     }
     if (cur < base.coords.length - 1) pieces.push(slice(base, cur, base.coords.length - 1));
-    return join(pieces);
+    const j = join(pieces);
+    j.precaucion = base.precaucion || []; j.zonas = j.zonas || base.zonas || null;   // avisos del viaje completo
+    return j;
   }
 
   async function requestRoute(from, to) {
@@ -538,7 +540,7 @@
     catch (e) { if (e.message !== 'too-long') throw e; r = await stitched(from, to, pts); }
     const cum = cumOf(r.coords);
     const steps = r.steps.map(s => ({ ...s, text: say(s) }));
-    const rt = { from, to, coords: r.coords, cum, steps, total: cum[cum.length - 1], time: r.dur, eleccion: r.eleccion || null, zonas: r.zonas || null,
+    const rt = { from, to, coords: r.coords, cum, steps, total: cum[cum.length - 1], time: r.dur, eleccion: r.eleccion || null, zonas: r.zonas || null, precaucion: r.precaucion || [],
       geo: { type: 'LineString', coordinates: r.coords.map(([la, lo]) => [lo, la]) } };
     rt.near = nearRoute(rt, 25);
     return rt;
@@ -609,6 +611,7 @@
     const zt = [];
     if (zn && zn.dentro && zn.dentro.length) zt.push(...zn.dentro.map(z => `⛔ El viaje empieza o termina dentro de una zona prohibida para este camión: ${z.nombre}.${z.nota ? ' ' + z.nota : ''}${z.fuente ? ' (' + z.fuente + ')' : ''}`));
     if (zn && zn.evitadas && zn.evitadas.length) zt.push(`✅ Se esquiva: ${zn.evitadas.join(', ')}.`);
+    if (route.precaucion && route.precaucion.length) zt.push(`⚠️ Pasa junto a ${route.precaucion.length === 1 ? '1 barrio popular' : route.precaucion.length + ' barrios populares'} (registro oficial RENABAP): te aviso al acercarte para que no te detengas.`);
     if (zn && zn.avisos && zn.avisos.length) zt.push(...zn.avisos.map(z => `ℹ️ ${z.nombre}: ${z.nota || ''}${z.fuente ? ' (' + z.fuente + ')' : ''}`));
     $('p-zonas').hidden = !zt.length;
     $('p-zonas').textContent = zt.join(' ');
@@ -1109,6 +1112,23 @@
   }
   // Aviso al acercarse a un reporte que está adelante (el puente bajo, solo si el camión no pasa)
   const repWarn = {};
+  // Barrios populares junto a la ruta (registro oficial RENABAP): aviso de precaución al acercarse, una vez por barrio
+  const precWarn = {};
+  function checkPrecaucion() {
+    if (mode !== 'nav' || !route || !route.precaucion || !route.precaucion.length || !me || (me.speed || 0) < 10) return;
+    const head = me.heading || 0, now = Date.now();
+    for (const b of route.precaucion) {
+      if (Math.abs(b.lat - me.lat) > 0.006 || Math.abs(b.lon - me.lon) > 0.007) continue;
+      const d = dist([me.lat, me.lon], [b.lat, b.lon]);
+      if (d > 450 || d < 20) continue;
+      if (Math.abs(((bearing([me.lat, me.lon], [b.lat, b.lon]) - head + 540) % 360) - 180) > 45) continue;
+      if (precWarn[b.renabap_id] && now - precWarn[b.renabap_id] < 30 * 60 * 1000) continue;
+      precWarn[b.renabap_id] = now;
+      const metros = Math.max(50, Math.round(d / 50) * 50);
+      showAlert(`⚠️ Zona de precaución a ${metros} m: no te detengas`, 'orange');
+      speak(`Precaución. Barrio popular a ${metros} metros. No te detengas.`);
+    }
+  }
   function checkReportes() {
     if (!reportes.length || !me || (me.speed || 0) < 10) return;
     const head = me.heading || 0, now = Date.now(), T = truck();
