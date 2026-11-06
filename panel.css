@@ -143,3 +143,12 @@ body.lector .tcard input, body.lector .side select[data-cam] { pointer-events: n
 body.lector .side::before { content: "👀 Modo solo mirar: podés ver todo, pero no cambiar nada."; display: block; margin: 10px 0 0; padding: 8px 12px; border-radius: 10px; background: color-mix(in srgb, var(--route) 14%, transparent); font-weight: 600; font-size: .9rem; }
 
 .place.rep { font-size: 20px; background: #fff; border-radius: 50%; width: 30px; height: 30px; display: grid; place-items: center; box-shadow: 0 1px 4px rgb(0 0 0 / .4); }
+
+/* Pedidos de ayuda (SOS) de los choferes: arriba de todo hasta que alguien los atiende */
+.sos-banner { position: fixed; z-index: 50; top: 0; left: 0; right: 0; background: #c81e1e; color: #fff; padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+  box-shadow: 0 6px 20px rgb(0 0 0 / .4); display: grid; gap: 8px; }
+.sos-item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-weight: 700; }
+.sos-item .txt { flex: 1 1 260px; font-size: 1.05rem; }
+.sos-item button, .sos-item a { background: #fff; color: #c81e1e; border: 0; border-radius: 10px; padding: 8px 12px; font-weight: 800; text-decoration: none; cursor: pointer; }
+.row.venc-pronto { background: color-mix(in srgb, #f5a524 18%, var(--card)); }
+.row.venc-mal { background: color-mix(in srgb, #c81e1e 16%, var(--card)); }

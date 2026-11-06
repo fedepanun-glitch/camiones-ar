@@ -75,7 +75,7 @@
   }
 
   // Formato común para camiones (la app usa nombres cortos)
-  const camionApp = c => ({ id: c.id, name: c.nombre, h: +c.alto, w: +c.peso, l: +c.largo, wd: +c.ancho, e: +c.eje, hz: !!c.peligrosa });
+  const camionApp = c => ({ id: c.id, name: c.nombre, h: +c.alto, w: +c.peso, l: +c.largo, wd: +c.ancho, e: +c.eje, hz: !!c.peligrosa, ej: c.ejes ? +c.ejes : null });
 
   window.Nube = {
     configurada, sb, DOMINIO, limpiarUsuario, sesion, cargarPerfil, entrar, salir, funcion, camionApp,

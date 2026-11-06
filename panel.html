@@ -31,6 +31,7 @@
       <button type="button" role="tab" data-tab="lugares">Lugares</button>
       <button type="button" role="tab" data-tab="calles">Calles</button>
       <button type="button" role="tab" data-tab="fotomultas">Fotomultas</button>
+      <button type="button" role="tab" data-tab="papeles">Papeles <b class="badge" id="badge-papeles" hidden></b></button>
       <button type="button" role="tab" data-tab="historial">Historial</button>
       <button type="button" role="tab" data-tab="ajustes">Ajustes</button>
     </nav>
@@ -131,6 +132,23 @@
     </section>
 
     <!-- Historial -->
+    <section class="pane" data-pane="papeles" hidden>
+      <h2>Vencimientos</h2>
+      <p class="tip">Licencias de los choferes, RTO/VTV, seguros, RUTA y permisos de cada camión. Se marcan en naranja 30 días antes y en rojo cuando ya vencieron, y el número en la pestaña te avisa.</p>
+      <form class="card form" id="f-venc">
+        <label>De<select name="quien" required></select></label>
+        <label>Documento<select name="documento">
+          <option>Licencia de conducir (LINTI)</option><option>Curso/certificado de cargas peligrosas</option><option>Apto psicofísico</option>
+          <option>RTO / VTV</option><option>Seguro</option><option>RUTA (Registro Único del Transporte Automotor)</option><option>Permiso de bitren</option>
+          <option>Habilitación SENASA</option><option>Matafuegos</option><option value="otro">Otro…</option></select></label>
+        <label hidden>Cuál<input name="otro" type="text" maxlength="80"></label>
+        <label>Vence<input name="vence" type="date" required></label>
+        <label class="wide">Nota<input name="nota" type="text" maxlength="120" placeholder="Opcional: número, aseguradora…"></label>
+        <button type="submit" class="btn go">Guardar</button>
+      </form>
+      <div class="list" id="vencimientos"></div>
+    </section>
+
     <section class="pane" data-pane="historial" hidden>
       <h2>Recorrido del día</h2>
       <form class="card form" id="f-reco">
@@ -195,6 +213,7 @@
   </div>
 </main>
 
+<div class="sos-banner" id="sos-banner" role="alert" hidden></div>
 <div class="toast" id="toast" role="status" hidden></div>
 
 <script src="vendor/maplibre/maplibre-gl.js"></script>

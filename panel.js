@@ -61,6 +61,10 @@
       if (r.error) fail(r.error, 'No se pudo cargar ' + k); else D[k] = r.data;
     }
     if (!aj.error && aj.data) D.ajustes = aj.data;
+    const ve = await sb.from('vencimientos').select('*').order('vence');
+    if (!ve.error) { D.vencimientos = ve.data; renderVenc(); }
+    const so = await sb.from('sos').select('*').eq('atendida', false).order('at', { ascending: false }).limit(20);
+    if (!so.error) { D.sos = so.data; renderSOS(); }
     renderAll();
   }
 
@@ -218,7 +222,7 @@
 
   // ---------- Render ----------
   function renderAll() {
-    fillSelects(); renderLive(); renderAlerts(); renderViajes(); renderChoferes(); renderCamiones(); renderLugares(); renderCalles();
+    fillSelects(); fillVencSelect(); renderVenc(); renderLive(); renderAlerts(); renderViajes(); renderChoferes(); renderCamiones(); renderLugares(); renderCalles();
     $('f-ajustes').velocidad_max.value = D.ajustes.velocidad_max;
     renderSitrack(); renderAdmins(); renderEventos(); fillHistorial();
     drawTrucks(); drawSat(); drawLugares(); drawBloqueos(); drawRutas(); frameAll();
@@ -474,7 +478,7 @@
   });
 
   // ---------- Camiones ----------
-  const F = [['nombre', 'Nombre', 'text'], ['patente', 'Patente (como en Sitrack)', 'opt'], ['alto', 'Alto (m)', 0.05], ['peso', 'Peso total (t)', 0.5], ['largo', 'Largo (m)', 0.5], ['ancho', 'Ancho (m)', 0.05], ['eje', 'Peso por eje (t)', 0.5]];
+  const F = [['nombre', 'Nombre', 'text'], ['patente', 'Patente (como en Sitrack)', 'opt'], ['alto', 'Alto (m)', 0.05], ['peso', 'Peso total (t)', 0.5], ['largo', 'Largo (m)', 0.5], ['ancho', 'Ancho (m)', 0.05], ['eje', 'Peso por eje (t)', 0.5], ['ejes', 'Ejes en total (para peajes)', 1]];
   function renderCamiones() {
     const box = $('camiones');
     const list = D.camiones.filter(c => c.activo);
@@ -851,6 +855,74 @@
   }
   document.addEventListener('click', () => { try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch (e) { /* nada */ } }, { once: true });
 
+  // ---------- Papeles: vencimientos de licencias, RTO/VTV, seguros, RUTA, permisos ----------
+  D.vencimientos = [];
+  const diasA = f => Math.round((new Date(f + 'T12:00:00') - new Date(hoyISO() + 'T12:00:00')) / 864e5);
+  function renderVenc() {
+    const box = $('vencimientos'); if (!box) return;
+    const de = v => v.camion_id ? (camion(v.camion_id) || {}).nombre || 'Camión' : v.chofer_id ? (chofer(v.chofer_id) || {}).nombre || 'Chofer' : 'Empresa';
+    box.innerHTML = D.vencimientos.length ? D.vencimientos.map(v => {
+      const d = diasA(v.vence), cls = d < 0 ? 'venc-mal' : d <= 30 ? 'venc-pronto' : '';
+      const cuando = d < 0 ? `venció hace ${-d} día${d === -1 ? '' : 's'}` : d === 0 ? 'vence hoy' : `vence en ${d} día${d === 1 ? '' : 's'}`;
+      return `<div class="row stack ${cls}"><span class="ico">${d < 0 ? '⛔' : d <= 30 ? '⚠️' : '📄'}</span><span><span class="t">${esc(v.documento)} · ${esc(de(v))}</span><br><span class="m">${fechaTxt(v.vence)} · ${cuando}${v.nota ? ' · ' + esc(v.nota) : ''}</span></span>
+        <span class="acts"><button type="button" class="btn danger sm" data-delvenc="${v.id}">Borrar</button></span></div>`;
+    }).join('') : '<p class="empty">Todavía no cargaste vencimientos.</p>';
+    const urg = D.vencimientos.filter(v => diasA(v.vence) <= 30).length;
+    $('badge-papeles').hidden = !urg; $('badge-papeles').textContent = urg;
+  }
+  function fillVencSelect() {
+    const sel = $('f-venc') && $('f-venc').quien; if (!sel) return;
+    sel.innerHTML = '<optgroup label="Camiones">' + D.camiones.filter(c => c.activo).map(c => `<option value="c:${c.id}">${esc(c.nombre)}${c.patente ? ' · ' + esc(c.patente) : ''}</option>`).join('') + '</optgroup>' +
+      '<optgroup label="Choferes">' + D.choferes.map(c => `<option value="p:${c.id}">${esc(c.nombre)}</option>`).join('') + '</optgroup><option value="e:">Empresa</option>';
+  }
+  $('f-venc').addEventListener('submit', async e => {
+    e.preventDefault(); const f = e.target, [k, id] = f.quien.value.split(':');
+    const doc = f.documento.value === 'otro' ? f.otro.value.trim() : f.documento.value;
+    if (!doc) { toast('Escribí qué documento es', true); return; }
+    const row = await q(sb.from('vencimientos').insert({ camion_id: k === 'c' ? id : null, chofer_id: k === 'p' ? id : null, documento: doc, vence: f.vence.value, nota: f.nota.value.trim() || null }).select().single(), 'No se pudo guardar');
+    D.vencimientos.push(row); D.vencimientos.sort((a, b) => a.vence.localeCompare(b.vence)); renderVenc(); f.reset(); toast('Vencimiento guardado');
+  });
+  $('f-venc').documento.addEventListener('change', e => { $('f-venc').otro.closest('label').hidden = e.target.value !== 'otro'; });
+  $('vencimientos').addEventListener('click', async e => {
+    const b = e.target.closest('[data-delvenc]'); if (!b) return;
+    if (!confirm('¿Borrar este vencimiento?')) return;
+    await q(sb.from('vencimientos').delete().eq('id', b.dataset.delvenc), 'No se pudo borrar');
+    D.vencimientos = D.vencimientos.filter(v => v.id !== b.dataset.delvenc); renderVenc();
+  });
+
+  // ---------- SOS de los choferes ----------
+  D.sos = [];
+  const SOS_TXT = { robo: '🚨 ROBO / ASALTO', accidente: '💥 ACCIDENTE', salud: '🩺 SE SIENTE MAL', mecanica: '🔧 CAMIÓN ROTO', ayuda: '🆘 PIDE AYUDA' };
+  let sosT = 0;
+  function renderSOS() {
+    const box = $('sos-banner'), abiertas = D.sos.filter(x => !x.atendida);
+    box.hidden = !abiertas.length; box.textContent = '';
+    for (const x of abiertas) {
+      const c = chofer(x.chofer_id), t = camion(x.camion_id), min = Math.max(0, Math.round((Date.now() - new Date(x.at)) / 60000));
+      const row = document.createElement('div'); row.className = 'sos-item';
+      const txt = document.createElement('span'); txt.className = 'txt';
+      txt.textContent = `${SOS_TXT[x.motivo] || SOS_TXT.ayuda} · ${c ? c.nombre : 'Un chofer'}${t ? ' (' + t.nombre + ')' : ''} · hace ${min} min${x.lat == null ? ' · sin ubicación' : ''}`;
+      row.append(txt);
+      if (x.lat != null) {
+        const ver = document.createElement('button'); ver.type = 'button'; ver.textContent = 'Ver en el mapa';
+        ver.addEventListener('click', () => { map.flyTo({ center: [x.lon, x.lat], zoom: 16 }); });
+        const gm = document.createElement('a'); gm.href = `https://www.google.com/maps?q=${x.lat},${x.lon}`; gm.target = '_blank'; gm.rel = 'noopener'; gm.textContent = 'Abrir en Google Maps';
+        row.append(ver, gm);
+      }
+      if (c && c.telefono) { const tel = document.createElement('a'); tel.href = 'tel:' + c.telefono; tel.textContent = '📞 Llamar'; row.append(tel); }
+      if (!document.body.classList.contains('lector')) {
+        const ok = document.createElement('button'); ok.type = 'button'; ok.textContent = '✔ Atendido';
+        ok.addEventListener('click', async () => {
+          try { await q(sb.from('sos').update({ atendida: true, atendida_por: me.id, atendida_at: new Date().toISOString() }).eq('id', x.id), 'No se pudo marcar'); x.atendida = true; renderSOS(); } catch (e) { /* ya avisó */ }
+        });
+        row.append(ok);
+      }
+      box.append(row);
+    }
+    // suena cada 10 segundos mientras haya pedidos sin atender
+    clearInterval(sosT); if (abiertas.length) { beep(); sosT = setInterval(beep, 10000); }
+  }
+
   let channel = null, reloadT = 0, repT = 0;
   function subscribe() {
     if (channel) return;
@@ -890,6 +962,14 @@
         drawSat(); if (tab === 'vivo') renderLive();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sitrack_estado' }, p => { if (p.new) { D.sitrack = p.new; renderSitrack(); } })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sos' }, p => {
+        if (p.eventType === 'INSERT') {
+          D.sos.unshift(p.new); renderSOS();
+          if (p.new.lat != null) map.flyTo({ center: [p.new.lon, p.new.lat], zoom: 15 });
+          const c = chofer(p.new.chofer_id);
+          if ('Notification' in window && Notification.permission === 'granted') new Notification('🆘 Pedido de ayuda', { body: `${c ? c.nombre : 'Un chofer'}: ${SOS_TXT[p.new.motivo] || ''}`, icon: 'icons/icon-192.png', requireInteraction: true });
+        } else if (p.eventType === 'UPDATE') { const x = D.sos.find(y => y.id === p.new.id); if (x) Object.assign(x, p.new); renderSOS(); }
+      })
       .subscribe();
   }
   // "hace X min" y camiones sin datos se actualizan solos

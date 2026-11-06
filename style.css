@@ -203,3 +203,9 @@ body:not([data-mode="nav"]) .center-btn { display: none; }
 .rep-opts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
 .rep-opts .big { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 1.8rem; padding: 10px; min-height: 76px; }
 .rep-opts .big span { font: 700 1rem var(--font-body); }
+
+/* Botón SOS: siempre a mano, rojo, arriba del de reportes */
+.sos-btn { position: fixed; z-index: 7; left: max(12px, env(safe-area-inset-left)); bottom: calc(190px + env(safe-area-inset-bottom)); width: 60px; height: 60px; border-radius: 50%;
+  border: 3px solid #fff; background: #c81e1e; color: #fff; font-weight: 800; font-size: 1.05rem; letter-spacing: .5px; box-shadow: 0 4px 14px rgb(0 0 0 / .35); }
+#sos-dlg a.big { display: flex; text-align: center; text-decoration: none; margin-top: 10px; font-size: 1.3rem; }
+.alert-banner.red { background: #c81e1e; color: #fff; }
