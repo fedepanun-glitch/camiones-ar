@@ -145,6 +145,54 @@ function zonasPara(zs: Zona[], camion: { largo?: number; peso?: number } | undef
   return { evitar: aplica.filter(z => !dentro.includes(z)), dentro, avisos };
 }
 
+// ---------- Restricciones de la ANSV (feriados, eventos): tramos y horarios en que no pueden circular camiones ----------
+type Ansv = { id: number; desde: string; hasta: string; titulo: string; detalle: string | null; franjas: string[][] | null;
+  tramos: { ruta: string; nombre: string; puntos: number[][] }[] | null; excepciones: string | null; fuente: string | null; fuente_url: string | null };
+let ansvL: Ansv[] = [], ansvAt = 0;
+async function cargarAnsv(): Promise<Ansv[]> {
+  if (ansvAt && Date.now() - ansvAt < 600_000) return ansvL;
+  const { data } = await supabase.from('restricciones_ansv').select('*').gt('hasta', new Date().toISOString());
+  ansvL = (data || []) as Ansv[]; ansvAt = Date.now();
+  return ansvL;
+}
+function distSeg(lon: number, lat: number, x1: number, y1: number, x2: number, y2: number) {
+  const kx = Math.cos(lat * Math.PI / 180) * 111320, ky = 110540;
+  const ax = (x1 - lon) * kx, ay = (y1 - lat) * ky, bx = (x2 - lon) * kx, by = (y2 - lat) * ky, vx = bx - ax, vy = by - ay;
+  const L = vx * vx + vy * vy, t = L ? Math.max(0, Math.min(1, -(ax * vx + ay * vy) / L)) : 0;
+  return Math.hypot(ax + t * vx, ay + t * vy);
+}
+// ¿El viaje (de salida a llegada) pasa por algún momento en que rige la restricción? Se mira cada 10 minutos.
+function viajeEnFranja(r: Ansv, salida: Date, llegada: Date) {
+  const d = new Date(r.desde).getTime(), h = new Date(r.hasta).getTime();
+  for (let t = salida.getTime(); t <= llegada.getTime() + 1; t += 600_000) {
+    if (t < d || t > h) continue;
+    if (!r.franjas || !r.franjas.length) return true;
+    const ar = new Date(t - 3 * 3600_000), min = ar.getUTCHours() * 60 + ar.getUTCMinutes();
+    const m = (x: string) => { const [a, b] = x.split(':').map(Number); return a * 60 + (b || 0); };
+    if (r.franjas.some(([a, b]) => min >= m(a) && min < m(b))) return true;
+  }
+  return false;
+}
+function ansvEnRuta(rs: Ansv[], c: number[][], durS: number, salida = new Date()) {
+  const llegada = new Date(salida.getTime() + durS * 1000), out = [];
+  for (const r of rs) {
+    if (!viajeEnFranja(r, salida, llegada)) continue;
+    for (const t of r.tramos || []) {
+      const P = t.puntos; if (!P || P.length < 2) continue;
+      const bx = [Math.min(...P.map(p => p[0])) - 0.05, Math.max(...P.map(p => p[0])) + 0.05, Math.min(...P.map(p => p[1])) - 0.05, Math.max(...P.map(p => p[1])) + 0.05];
+      let m = 0;
+      for (let i = 1; i < c.length; i++) {
+        const lon = (c[i - 1][0] + c[i][0]) / 2, lat = (c[i - 1][1] + c[i][1]) / 2;
+        if (lon < bx[0] || lon > bx[1] || lat < bx[2] || lat > bx[3]) continue;
+        let d = Infinity; for (let j = 1; j < P.length; j++) d = Math.min(d, distSeg(lon, lat, P[j - 1][0], P[j - 1][1], P[j][0], P[j][1]));
+        if (d < 3000) m += metros(c[i - 1][0], c[i - 1][1], c[i][0], c[i][1]);
+      }
+      if (m >= 8000) out.push({ titulo: r.titulo, tramo: `${t.ruta} (${t.nombre})`, km: Math.round(m / 1000), detalle: r.detalle, excepciones: r.excepciones, hasta: r.hasta, franjas: r.franjas, fuente: r.fuente, fuente_url: r.fuente_url });
+    }
+  }
+  return out;
+}
+
 const supabase = createClient(Deno.env.get('SUPABASE_URL')!, (Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY'))!, { auth: { persistSession: false } });
 
 Deno.serve(async req => {
@@ -216,6 +264,14 @@ Deno.serve(async req => {
               const { data: bp } = await supabase.rpc('barrios_en_ruta', { linea: elegida.geometry });
               elegida.properties.precaucion = bp || [];
             } catch { elegida.properties.precaucion = []; }
+            // Peajes y puestos de control (sanitarios, aduanas, balanzas) sobre el camino, en orden
+            try {
+              const { data: pr } = await supabase.rpc('puntos_en_ruta', { linea: elegida.geometry });
+              elegida.properties.puntos = pr || [];
+            } catch { elegida.properties.puntos = []; }
+            // Restricciones de la ANSV que caen en el horario del viaje (si sale ahora)
+            try { elegida.properties.ansv = ansvEnRuta(await cargarAnsv(), elegida.geometry?.coordinates || [], elegida.properties?.summary?.duration || 0); }
+            catch { elegida.properties.ansv = []; }
             d.features = [elegida, ...d.features.filter((_: unknown, i: number) => i !== mejor)];
           }
           return new Response(JSON.stringify(d), { status: 200, headers: { ...CORS, 'Content-Type': 'application/json' } });

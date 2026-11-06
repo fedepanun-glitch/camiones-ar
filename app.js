@@ -185,6 +185,7 @@
     const nav = m === 'nav';
     $('turn').hidden = !nav; $('navbar').hidden = !nav;
     $('b-camara').hidden = !(nav && NUBE);
+    $('b-sos').hidden = !NUBE;
     if (!nav) { $('alert').hidden = true; $('b-center').hidden = true; setConnector(null); map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 }); map.easeTo({ pitch: 0, bearing: 0, duration: 400 }); }
     if (m === 'home') { renderFavs(); restoreTrip(); }
   }
@@ -225,7 +226,7 @@
     }
     me = { lat: c.latitude, lon: c.longitude, speed: speed || 0, heading: heading ?? (me && me.heading) ?? 0, at: now };
     lastFix = { lat: me.lat, lon: me.lon, at: now };
-    sendPos(c.accuracy); checkCameras(); if (NUBE) checkReportes(); checkPrecaucion();
+    sendPos(c.accuracy); checkCameras(); if (NUBE) checkReportes(); checkPrecaucion(); checkPuntos();
     if (mode === 'nav') navTick(); else setTarget(me.lat, me.lon, me.heading || 0);
   }
 
@@ -475,7 +476,7 @@
     }
     const f = d.features[0];
     return { coords: f.geometry.coordinates.map(([lo, la]) => [la, lo]), steps: f.properties.segments.flatMap(s => s.steps),
-      dist: f.properties.summary.distance || 0, dur: f.properties.summary.duration || 0, eleccion: f.properties.eleccion || null, zonas: f.properties.zonas || null, precaucion: f.properties.precaucion || [] };
+      dist: f.properties.summary.distance || 0, dur: f.properties.summary.duration || 0, eleccion: f.properties.eleccion || null, zonas: f.properties.zonas || null, precaucion: f.properties.precaucion || [], puntos: f.properties.puntos || [], ansv: f.properties.ansv || [] };
   }
   const cumOf = coords => { const c = [0]; for (let i = 1; i < coords.length; i++) c.push(c[i - 1] + dist(coords[i - 1], coords[i])); return c; };
 
@@ -530,6 +531,7 @@
     if (cur < base.coords.length - 1) pieces.push(slice(base, cur, base.coords.length - 1));
     const j = join(pieces);
     j.precaucion = base.precaucion || []; j.zonas = j.zonas || base.zonas || null;   // avisos del viaje completo
+    j.puntos = base.puntos || []; j.ansv = base.ansv || [];
     return j;
   }
 
@@ -540,7 +542,7 @@
     catch (e) { if (e.message !== 'too-long') throw e; r = await stitched(from, to, pts); }
     const cum = cumOf(r.coords);
     const steps = r.steps.map(s => ({ ...s, text: say(s) }));
-    const rt = { from, to, coords: r.coords, cum, steps, total: cum[cum.length - 1], time: r.dur, eleccion: r.eleccion || null, zonas: r.zonas || null, precaucion: r.precaucion || [],
+    const rt = { from, to, coords: r.coords, cum, steps, total: cum[cum.length - 1], time: r.dur, eleccion: r.eleccion || null, zonas: r.zonas || null, precaucion: r.precaucion || [], puntos: r.puntos || [], ansv: r.ansv || [],
       geo: { type: 'LineString', coordinates: r.coords.map(([la, lo]) => [lo, la]) } };
     rt.near = nearRoute(rt, 25);
     return rt;
@@ -611,6 +613,11 @@
     const zt = [];
     if (zn && zn.dentro && zn.dentro.length) zt.push(...zn.dentro.map(z => `⛔ El viaje empieza o termina dentro de una zona prohibida para este camión: ${z.nombre}.${z.nota ? ' ' + z.nota : ''}${z.fuente ? ' (' + z.fuente + ')' : ''}`));
     if (zn && zn.evitadas && zn.evitadas.length) zt.push(`✅ Se esquiva: ${zn.evitadas.join(', ')}.`);
+    for (const a of route.ansv || []) zt.push(`⛔ ${a.titulo}: ${a.tramo}${a.franjas && a.franjas.length ? ', de ' + a.franjas.map(f => f.join(' a ')).join(' y ') + ' h' : ''}, hasta el ${new Date(a.hasta).toLocaleDateString('es-AR', { day: 'numeric', month: 'numeric' })}. Saliendo ahora te agarra. ${a.excepciones || ''}`);
+    const pz = peajesDe(route);
+    if (pz.n) zt.push(`🛣️ ${pz.n === 1 ? '1 peaje' : pz.n + ' peajes'}${pz.total ? ': aprox. $' + Math.round(pz.total).toLocaleString('es-AR') + (pz.sin ? ` (${pz.sin} sin tarifa cargada)` : '') : ' (sin tarifas cargadas todavía)'}${pz.nota}.`);
+    const ct = (route.puntos || []).filter(x => x.clase === 'control');
+    if (ct.length) zt.push(`🛂 ${ct.length === 1 ? '1 puesto de control' : ct.length + ' puestos de control'} en el camino: ${[...new Set(ct.map(x => x.nombre))].slice(0, 4).join(', ')}${ct.length > 4 ? '…' : ''}.`);
     if (route.precaucion && route.precaucion.length) zt.push(`⚠️ Pasa junto a ${route.precaucion.length === 1 ? '1 barrio popular' : route.precaucion.length + ' barrios populares'} (registro oficial RENABAP): te aviso al acercarte para que no te detengas.`);
     if (zn && zn.avisos && zn.avisos.length) zt.push(...zn.avisos.map(z => `ℹ️ ${z.nombre}: ${z.nota || ''}${z.fuente ? ' (' + z.fuente + ')' : ''}`));
     $('p-zonas').hidden = !zt.length;
@@ -1112,6 +1119,40 @@
   }
   // Aviso al acercarse a un reporte que está adelante (el puente bajo, solo si el camión no pasa)
   const repWarn = {};
+  // ---------- Peajes: tarifa según los ejes del camión (categorías "2" a "6" = 6 o más ejes) ----------
+  function tarifaPeaje(p, T) {
+    const t = p.tarifas; if (!t) return null;
+    const ks = Object.keys(t).filter(k => /^\d+$/.test(k)).map(Number).sort((a, b) => a - b); if (!ks.length) return null;
+    const ej = T && T.ej ? T.ej : null, k = ej ? (ks.filter(x => x <= ej).pop() ?? ks[0]) : ks[ks.length - 1];
+    return +t[String(k)];
+  }
+  function peajesDe(rt) {
+    const T = truck(), ps = (rt.puntos || []).filter(x => x.clase === 'peaje');
+    let total = 0, sin = 0; for (const p of ps) { const v = tarifaPeaje(p, T); if (v) total += v; else sin++; }
+    return { n: ps.length, total, sin, nota: T && T.ej ? '' : ' (cargá los ejes del camión en el panel para la tarifa justa)' };
+  }
+  // Aviso al acercarse a un peaje o a un puesto de control (sanitario, aduana, balanza)
+  const ptoWarn = {};
+  const CTRL = { sanitario: '🧴 Control sanitario', aduana: '🛃 Aduana', balanza: '⚖️ Balanza', policial: '👮 Control policial', otro: '🛂 Puesto de control' };
+  function checkPuntos() {
+    if (mode !== 'nav' || !route || !route.puntos || !route.puntos.length || !me) return;
+    const T = truck();
+    for (const p of route.puntos) {
+      if (ptoWarn[p.id] || Math.abs(p.lat - me.lat) > 0.012 || Math.abs(p.lon - me.lon) > 0.014) continue;
+      const d = dist([me.lat, me.lon], [p.lat, p.lon]); if (d > 1100) continue;
+      ptoWarn[p.id] = Date.now();
+      const metros = d > 700 ? '1 kilómetro' : Math.max(100, Math.round(d / 100) * 100) + ' metros';
+      if (p.clase === 'peaje') {
+        const v = tarifaPeaje(p, T);
+        showAlert(`🛣️ Peaje ${p.nombre && p.nombre !== 'Peaje' ? p.nombre + ' ' : ''}a ${metros}${v ? ': $' + Math.round(v).toLocaleString('es-AR') : ''}`, 'orange');
+        speak(`Peaje a ${metros}${v ? '. Sale ' + Math.round(v) + ' pesos' : ''}.`);
+      } else {
+        const n = CTRL[p.tipo] || CTRL.otro;
+        showAlert(`${n} a ${metros}${p.nombre ? ': ' + p.nombre : ''}`, 'orange');
+        speak(`${n.replace(/^\S+ /, '')} a ${metros}. Tené los papeles a mano.`);
+      }
+    }
+  }
   // Barrios populares junto a la ruta (registro oficial RENABAP): aviso de precaución al acercarse, una vez por barrio
   const precWarn = {};
   function checkPrecaucion() {
@@ -1151,6 +1192,21 @@
       speak(`Atención. ${nombre}${extra ? ' de ' + String(r.dato).replace('.', ' coma ') + ' metros' : ''} a ${metros} metros.`);
       if (r.tipo === 'altura' || r.tipo === 'corte') beep();
     }
+  }
+  // ---------- SOS: pedido de ayuda al dueño con la ubicación ----------
+  async function enviarSOS(motivo) {
+    const fila = { chofer_id: session && session.user.id, camion_id: isUuid(truckId) ? truckId : null, motivo,
+      lat: me ? +me.lat.toFixed(6) : null, lon: me ? +me.lon.toFixed(6) : null };
+    for (let i = 0; i < 3; i++) {   // reintenta por si la señal está mala
+      const { error } = await NUBE.sb.from('sos').insert(fila);
+      if (!error) { showAlert('🆘 Pedido de ayuda enviado. El dueño ya ve tu ubicación.', 'red'); speak('Pedido de ayuda enviado.'); beep(); return; }
+      await new Promise(r => setTimeout(r, 3000));
+    }
+    showAlert('No se pudo enviar el pedido de ayuda. Llamá al 911 o al dueño.', 'red');
+  }
+  if (NUBE) {
+    $('b-sos').addEventListener('click', () => { $('sos-dlg').returnValue = ''; $('sos-dlg').showModal(); });
+    $('sos-dlg').addEventListener('close', () => { const m = $('sos-dlg').returnValue; if (m) enviarSOS(m); });
   }
   async function enviarReporte(tipo, dato) {
     if (!me) { showAlert('Todavía no tengo tu ubicación.', 'orange'); return; }

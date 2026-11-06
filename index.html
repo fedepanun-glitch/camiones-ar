@@ -155,6 +155,22 @@
 
 <!-- Reportar algo en el camino (chofer): queda para todos -->
 <button type="button" class="cam-btn" id="b-camara" aria-label="Reportar algo en el camino" hidden>⚠️</button>
+<button type="button" class="sos-btn" id="b-sos" aria-label="Pedir ayuda (SOS)" hidden>SOS</button>
+<dialog id="sos-dlg" aria-labelledby="sos-title">
+  <form method="dialog" class="dlg">
+    <header class="dlg-head"><h2 id="sos-title">🆘 Pedir ayuda</h2></header>
+    <p class="tip">Le llega al instante al dueño con tu ubicación. Si hay peligro, llamá también al 911.</p>
+    <div class="rep-opts">
+      <button value="robo" class="big warn">🚨<span>Robo / asalto</span></button>
+      <button value="accidente" class="big warn">💥<span>Accidente</span></button>
+      <button value="salud" class="big warn">🩺<span>Me siento mal</span></button>
+      <button value="mecanica" class="big gray">🔧<span>Se rompió el camión</span></button>
+      <button value="ayuda" class="big gray">🆘<span>Otra ayuda</span></button>
+    </div>
+    <a class="big go full" href="tel:911">📞 Llamar al 911</a>
+    <button value="" class="big gray full">Cancelar</button>
+  </form>
+</dialog>
 <dialog id="rep-dlg" aria-labelledby="rep-title">
   <form method="dialog" class="dlg">
     <header class="dlg-head"><h2 id="rep-title">¿Qué hay acá?</h2></header>

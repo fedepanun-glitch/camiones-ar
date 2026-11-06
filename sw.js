@@ -1,5 +1,5 @@
 // Guarda la app y el mapa de los viajes para poder usarla sin señal.
-const APP = 'camionesar-app-v17';
+const APP = 'camionesar-app-v18';
 const MAP = 'camionesar-mapa-v1';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'config.js', 'nube-config.js', 'nube.js', 'vendor/supabase/supabase.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png',
   'vendor/maplibre/maplibre-gl.js', 'vendor/maplibre/maplibre-gl.css', 'data/restricciones.json', 'data/propias.json'];
