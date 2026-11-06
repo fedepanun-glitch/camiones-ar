@@ -103,11 +103,11 @@ function puntuar(f: any, r: Red, bitren = false) {
 }
 
 // ---------- Zonas prohibidas por ordenanza (p. ej. Rosario: semirremolques y acoplados) ----------
-type Zona = { id: string; nombre: string; anillo: number[][]; largo_min: number | null; peso_min: number | null; nota: string | null; fuente: string | null; horario: { dias?: number[]; franjas?: string[][] } | null };
+type Zona = { id: string; nombre: string; anillo: number[][]; largo_min: number | null; peso_min: number | null; nota: string | null; fuente: string | null; horario: { dias?: number[]; franjas?: string[][] } | null; solo_aviso?: boolean };
 let zonasP: Zona[] = [], zonasAt = 0;
 async function cargarZonas(): Promise<Zona[]> {
   if (zonasAt && Date.now() - zonasAt < 600_000) return zonasP;
-  const { data } = await supabase.from('zonas_prohibidas').select('id, nombre, anillo, largo_min, peso_min, nota, fuente, horario').eq('activo', true);
+  const { data } = await supabase.from('zonas_prohibidas').select('id, nombre, anillo, largo_min, peso_min, nota, fuente, horario, solo_aviso').eq('activo', true);
   zonasP = (data || []) as Zona[]; zonasAt = Date.now();
   return zonasP;
 }
@@ -133,13 +133,16 @@ function rigeAhora(z: Zona, ahora = new Date()) {
 function zonasPara(zs: Zona[], camion: { largo?: number; peso?: number } | undefined, coords: number[][]) {
   const largo = Number(camion?.largo) || 0, peso = Number(camion?.peso) || 0;
   const ext = [coords[0], coords[coords.length - 1]].filter(Boolean);
-  if (!ext.length) return { evitar: [], dentro: [] };
+  if (!ext.length) return { evitar: [], dentro: [], avisos: [] };
+  // Reglas locales que solo se avisan (estacionamiento, carga y descarga) donde empieza o termina el viaje
+  const avisos = zs.filter(z => z.solo_aviso && ext.some(c => adentro(c[0], c[1], z.anillo)));
+  zs = zs.filter(z => !z.solo_aviso);
   // Solo las zonas cerca del viaje (dentro del rectángulo salida-llegada, más ~30 km)
   const M = 0.3, x0 = Math.min(...ext.map(c => c[0])) - M, x1 = Math.max(...ext.map(c => c[0])) + M, y0 = Math.min(...ext.map(c => c[1])) - M, y1 = Math.max(...ext.map(c => c[1])) + M;
   const cerca = (z: Zona) => z.anillo.some(([x, y]) => x >= x0 && x <= x1 && y >= y0 && y <= y1);
   const aplica = zs.filter(z => ((z.largo_min != null && largo >= z.largo_min) || (z.peso_min != null && peso >= z.peso_min)) && cerca(z) && rigeAhora(z));
   const dentro = aplica.filter(z => ext.some(c => adentro(c[0], c[1], z.anillo)));
-  return { evitar: aplica.filter(z => !dentro.includes(z)), dentro };
+  return { evitar: aplica.filter(z => !dentro.includes(z)), dentro, avisos };
 }
 
 const supabase = createClient(Deno.env.get('SUPABASE_URL')!, (Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY'))!, { auth: { persistSession: false } });
@@ -176,7 +179,7 @@ Deno.serve(async req => {
       // deno-lint-ignore no-explicit-any
       let body = (msg.body ?? {}) as any;
       // Zonas prohibidas para este camión: se suman a las que ya se esquivan
-      let zs: { evitar: Zona[]; dentro: Zona[] } = { evitar: [], dentro: [] };
+      let zs: { evitar: Zona[]; dentro: Zona[]; avisos: Zona[] } = { evitar: [], dentro: [], avisos: [] };
       try { zs = zonasPara(await cargarZonas(), msg.camion, body.coordinates || []); } catch { /* sin zonas */ }
       const sinZonas = body;
       if (zs.evitar.length) {
@@ -184,7 +187,8 @@ Deno.serve(async req => {
         const polys = prev ? (prev.type === 'MultiPolygon' ? prev.coordinates : [prev.coordinates]) : [];
         body = { ...body, options: { ...(body.options || {}), avoid_polygons: { type: 'MultiPolygon', coordinates: [...polys, ...zs.evitar.map(z => [z.anillo])] } } };
       }
-      const infoZonas = { evitadas: zs.evitar.map(z => z.nombre), dentro: zs.dentro.map(z => ({ nombre: z.nombre, nota: z.nota, fuente: z.fuente })) };
+      const infoZonas = { evitadas: zs.evitar.map(z => z.nombre), dentro: zs.dentro.map(z => ({ nombre: z.nombre, nota: z.nota, fuente: z.fuente })),
+        avisos: zs.avisos.map(z => ({ nombre: z.nombre, nota: z.nota, fuente: z.fuente })) };
       if (!(msg as { elegir?: boolean }).elegir) {
         upstream = await post(body);
         if (!upstream.ok && zs.evitar.length) { await upstream.body?.cancel(); upstream = await post(sinZonas); infoZonas.evitadas = []; }

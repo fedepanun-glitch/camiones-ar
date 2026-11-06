@@ -609,6 +609,7 @@
     const zt = [];
     if (zn && zn.dentro && zn.dentro.length) zt.push(...zn.dentro.map(z => `⛔ El viaje empieza o termina dentro de una zona prohibida para este camión: ${z.nombre}.${z.nota ? ' ' + z.nota : ''}${z.fuente ? ' (' + z.fuente + ')' : ''}`));
     if (zn && zn.evitadas && zn.evitadas.length) zt.push(`✅ Se esquiva: ${zn.evitadas.join(', ')}.`);
+    if (zn && zn.avisos && zn.avisos.length) zt.push(...zn.avisos.map(z => `ℹ️ ${z.nombre}: ${z.nota || ''}${z.fuente ? ' (' + z.fuente + ')' : ''}`));
     $('p-zonas').hidden = !zt.length;
     $('p-zonas').textContent = zt.join(' ');
     const n = route.near.length;
