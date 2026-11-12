@@ -1127,9 +1127,34 @@
     const ej = T && T.ej ? T.ej : null, k = ej ? (ks.filter(x => x <= ej).pop() ?? ks[0]) : ks[ks.length - 1];
     return +t[String(k)];
   }
+  // Peajes que cobran distinto según el sentido (p. ej. Hudson: hacia Capital cobra 2 tarifas e incluye Dock Sud).
+  // tarifas.sentidos = [{ rumbo: grados, factor: n, si_paso: 'id de otro peaje', factor_si_paso: n }]:
+  // se usa la regla cuyo rumbo esté a menos de 90° del rumbo del camión al pasar; si_paso mira si ese otro
+  // peaje está antes en el mismo camino (ya se pagó ahí).
+  function rumboEn(rt, m) {
+    const c = rt && rt.coords, cum = rt && rt.cum; if (!c || !cum || c.length < 2 || m == null) return null;
+    let i = 1; while (i < cum.length - 1 && cum[i] < m) i++;
+    return bearing(c[Math.max(0, i - 1)], c[Math.min(c.length - 1, i + 1)]);
+  }
+  function factorPeaje(p, rt) {
+    const reglas = p.tarifas && p.tarifas.sentidos; if (!Array.isArray(reglas) || !reglas.length) return { f: 1 };
+    const r = rumboEn(rt, p.metros); if (r == null) return { f: 1 };
+    const d = x => Math.abs(((x - r + 540) % 360) - 180);
+    const g = reglas.filter(x => d(x.rumbo) < 90).sort((a, b) => d(a.rumbo) - d(b.rumbo))[0]; if (!g) return { f: 1 };
+    if (g.si_paso) {
+      const antes = (rt.puntos || []).find(x => x.id === g.si_paso && x.metros < p.metros);
+      if (antes) return { f: g.factor_si_paso ?? 0, pagado: antes.nombre };
+    }
+    return { f: g.factor ?? 1 };
+  }
+  function precioPeaje(p, T, rt) {
+    const v = tarifaPeaje(p, T); if (!v) return { v: null };
+    const { f, pagado } = factorPeaje(p, rt);
+    return { v: v * f, pagado, doble: f > 1 };
+  }
   function peajesDe(rt) {
     const T = truck(), ps = (rt.puntos || []).filter(x => x.clase === 'peaje');
-    let total = 0, sin = 0; for (const p of ps) { const v = tarifaPeaje(p, T); if (v) total += v; else sin++; }
+    let total = 0, sin = 0; for (const p of ps) { const { v } = precioPeaje(p, T, rt); if (v != null) total += v; else sin++; }
     return { n: ps.length, total, sin, nota: T && T.ej ? '' : ' (cargá los ejes del camión en el panel para la tarifa justa)' };
   }
   // Aviso al acercarse a un peaje o a un puesto de control (sanitario, aduana, balanza)
@@ -1144,9 +1169,15 @@
       ptoWarn[p.id] = Date.now();
       const metros = d > 700 ? '1 kilómetro' : Math.max(100, Math.round(d / 100) * 100) + ' metros';
       if (p.clase === 'peaje') {
-        const v = tarifaPeaje(p, T);
-        showAlert(`🛣️ Peaje ${p.nombre && p.nombre !== 'Peaje' ? p.nombre + ' ' : ''}a ${metros}${v ? ': $' + Math.round(v).toLocaleString('es-AR') : ''}`, 'orange');
-        speak(`Peaje a ${metros}${v ? '. Sale ' + Math.round(v) + ' pesos' : ''}.`);
+        const { v, pagado } = precioPeaje(p, T, route);
+        const nom = p.nombre && p.nombre !== 'Peaje' ? p.nombre + ' ' : '';
+        if (pagado) {
+          showAlert(`🛣️ Peaje ${nom}a ${metros}: ya lo pagaste en ${pagado}`, 'orange');
+          speak(`Peaje a ${metros}. Ya lo pagaste en ${pagado}.`);
+        } else {
+          showAlert(`🛣️ Peaje ${nom}a ${metros}${v ? ': $' + Math.round(v).toLocaleString('es-AR') : ''}`, 'orange');
+          speak(`Peaje a ${metros}${v ? '. Sale ' + Math.round(v) + ' pesos' : ''}.`);
+        }
       } else {
         const n = CTRL[p.tipo] || CTRL.otro;
         showAlert(`${n} a ${metros}${p.nombre ? ': ' + p.nombre : ''}`, 'orange');
