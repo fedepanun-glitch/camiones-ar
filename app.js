@@ -226,7 +226,7 @@
     }
     me = { lat: c.latitude, lon: c.longitude, speed: speed || 0, heading: heading ?? (me && me.heading) ?? 0, at: now };
     lastFix = { lat: me.lat, lon: me.lon, at: now };
-    sendPos(c.accuracy); checkCameras(); if (NUBE) checkReportes(); checkPrecaucion(); checkPuntos();
+    sendPos(c.accuracy); checkCameras(); if (NUBE) checkReportes(); checkPrecaucion(); checkPuntos(); checkClima();
     if (mode === 'nav') navTick(); else setTarget(me.lat, me.lon, me.heading || 0);
   }
 
@@ -476,7 +476,7 @@
     }
     const f = d.features[0];
     return { coords: f.geometry.coordinates.map(([lo, la]) => [la, lo]), steps: f.properties.segments.flatMap(s => s.steps),
-      dist: f.properties.summary.distance || 0, dur: f.properties.summary.duration || 0, eleccion: f.properties.eleccion || null, zonas: f.properties.zonas || null, precaucion: f.properties.precaucion || [], puntos: f.properties.puntos || [], ansv: f.properties.ansv || [] };
+      dist: f.properties.summary.distance || 0, dur: f.properties.summary.duration || 0, eleccion: f.properties.eleccion || null, zonas: f.properties.zonas || null, precaucion: f.properties.precaucion || [], puntos: f.properties.puntos || [], ansv: f.properties.ansv || [], clima: f.properties.clima || [] };
   }
   const cumOf = coords => { const c = [0]; for (let i = 1; i < coords.length; i++) c.push(c[i - 1] + dist(coords[i - 1], coords[i])); return c; };
 
@@ -531,7 +531,7 @@
     if (cur < base.coords.length - 1) pieces.push(slice(base, cur, base.coords.length - 1));
     const j = join(pieces);
     j.precaucion = base.precaucion || []; j.zonas = j.zonas || base.zonas || null;   // avisos del viaje completo
-    j.puntos = base.puntos || []; j.ansv = base.ansv || [];
+    j.puntos = base.puntos || []; j.ansv = base.ansv || []; j.clima = base.clima || [];
     return j;
   }
 
@@ -542,7 +542,7 @@
     catch (e) { if (e.message !== 'too-long') throw e; r = await stitched(from, to, pts); }
     const cum = cumOf(r.coords);
     const steps = r.steps.map(s => ({ ...s, text: say(s) }));
-    const rt = { from, to, coords: r.coords, cum, steps, total: cum[cum.length - 1], time: r.dur, eleccion: r.eleccion || null, zonas: r.zonas || null, precaucion: r.precaucion || [], puntos: r.puntos || [], ansv: r.ansv || [],
+    const rt = { from, to, coords: r.coords, cum, steps, total: cum[cum.length - 1], time: r.dur, eleccion: r.eleccion || null, zonas: r.zonas || null, precaucion: r.precaucion || [], puntos: r.puntos || [], ansv: r.ansv || [], clima: r.clima || [],
       geo: { type: 'LineString', coordinates: r.coords.map(([la, lo]) => [lo, la]) } };
     rt.near = nearRoute(rt, 25);
     return rt;
@@ -614,6 +614,7 @@
     if (zn && zn.dentro && zn.dentro.length) zt.push(...zn.dentro.map(z => `⛔ El viaje empieza o termina dentro de una zona prohibida para este camión: ${z.nombre}.${z.nota ? ' ' + z.nota : ''}${z.fuente ? ' (' + z.fuente + ')' : ''}`));
     if (zn && zn.evitadas && zn.evitadas.length) zt.push(`✅ Se esquiva: ${zn.evitadas.join(', ')}.`);
     for (const a of route.ansv || []) zt.push(`⛔ ${a.titulo}: ${a.tramo}${a.franjas && a.franjas.length ? ', de ' + a.franjas.map(f => f.join(' a ')).join(' y ') + ' h' : ''}, hasta el ${new Date(a.hasta).toLocaleDateString('es-AR', { day: 'numeric', month: 'numeric' })}. Saliendo ahora te agarra. ${a.excepciones || ''}`);
+    for (const a of route.clima || []) zt.push(climaTexto(a, T));
     const pz = peajesDe(route);
     if (pz.n) zt.push(`🛣️ ${pz.n === 1 ? '1 peaje' : pz.n + ' peajes'}${pz.total ? ': aprox. $' + Math.round(pz.total).toLocaleString('es-AR') + (pz.sin ? ` (${pz.sin} sin tarifa cargada)` : '') : ' (sin tarifas cargadas todavía)'}${pz.nota}.`);
     const ct = (route.puntos || []).filter(x => x.clase === 'control');
@@ -1151,6 +1152,36 @@
         showAlert(`${n} a ${metros}${p.nombre ? ': ' + p.nombre : ''}`, 'orange');
         speak(`${n.replace(/^\S+ /, '')} a ${metros}. Tené los papeles a mano.`);
       }
+    }
+  }
+  // ---------- Alertas del Servicio Meteorológico Nacional sobre el camino ----------
+  const NIV = { amarilla: '🟡', naranja: '🟠', roja: '🔴' };
+  const hora = t => new Date(t).toLocaleString('es-AR', { weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'America/Argentina/Buenos_Aires' });
+  function consejoClima(ev, T) {
+    const e = (ev || '').toLowerCase(), big = T && T.l >= 18;
+    if (e.includes('viento') || e.includes('zonda')) return big ? 'Con bitrén el viento de costado es peligroso: bajá la velocidad y, si las ráfagas son fuertes, pará en un lugar seguro.' : 'Bajá la velocidad, cuidado con las ráfagas de costado.';
+    if (e.includes('tormenta') || e.includes('lluvia')) return 'Bajá la velocidad, más distancia de frenado y cuidado con el granizo y el agua en la ruta.';
+    if (e.includes('nev') || e.includes('nieve')) return 'Puede haber cortes por nieve: averiguá el estado del paso o la ruta antes de salir.';
+    if (e.includes('niebla')) return 'Luces bajas y antiniebla, mucha distancia y no te detengas sobre la calzada.';
+    return 'Manejá con precaución.';
+  }
+  function climaTexto(a, T) {
+    const km = Math.round(a.entra / 1000), largo = Math.max(1, Math.round((a.sale - a.entra) / 1000));
+    return `${NIV[a.nivel] || '⚠️'} Alerta ${a.nivel || ''} del SMN por ${(a.evento || 'clima').toLowerCase()} ${km < 1 ? 'en la salida' : 'desde el km ' + km} (${largo} km dentro de la zona; rige ${a.desde ? 'de ' + hora(a.desde) + ' ' : ''}hasta ${hora(a.hasta)}). ${consejoClima(a.evento, T)}`;
+  }
+  const climaWarn = {};
+  function checkClima() {
+    if (mode !== 'nav' || !route || !route.clima || !route.clima.length) return;
+    const done = route.cum[nav.idx] || 0, now = Date.now(), T = truck();
+    for (const a of route.clima) {
+      const k = a.evento + '|' + a.entra;
+      if (climaWarn[k] || (a.hasta && Date.parse(a.hasta) < now)) continue;
+      const falta = a.entra - done;
+      if (falta > 10000 || a.sale < done) continue;
+      climaWarn[k] = now;
+      const donde = falta > 500 ? `en ${Math.round(falta / 1000) || 1} km` : 'ya';
+      showAlert(`${NIV[a.nivel] || '⚠️'} Alerta ${a.nivel || ''} por ${(a.evento || 'clima').toLowerCase()}: entrás a la zona ${donde}`, a.nivel === 'roja' || a.nivel === 'naranja' ? 'red' : 'orange');
+      speak(`Atención. Alerta ${a.nivel || ''} por ${(a.evento || 'clima').toLowerCase()} ${falta > 500 ? 'en ' + (Math.round(falta / 1000) || 1) + ' kilómetros' : 'en esta zona'}. ${consejoClima(a.evento, T)}`);
     }
   }
   // Barrios populares junto a la ruta (registro oficial RENABAP): aviso de precaución al acercarse, una vez por barrio

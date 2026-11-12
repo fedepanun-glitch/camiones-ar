@@ -90,6 +90,10 @@
   function addLayers() {
     if (map.getSource('bloqueos')) return;
     // Rutas: las que siguen los choferes ahora (azul) y la de un viaje elegido en la lista (verde, punteada si es planeada)
+    // Alertas del SMN: zonas pintadas según el nivel (más fuerte si ya rige, solo el borde punteado si empieza más tarde)
+    map.addSource('clima', { type: 'geojson', data: EMPTY });
+    map.addLayer({ id: 'clima', type: 'fill', source: 'clima', paint: { 'fill-color': ['match', ['get', 'nivel'], 'roja', '#d62828', 'naranja', '#f77f00', '#f2c200'], 'fill-opacity': ['case', ['get', 'ahora'], 0.22, 0.06] } });
+    map.addLayer({ id: 'clima-borde', type: 'line', source: 'clima', paint: { 'line-color': ['match', ['get', 'nivel'], 'roja', '#d62828', 'naranja', '#f77f00', '#c9a000'], 'line-width': 1.5, 'line-dasharray': [2, 2] } });
     map.addSource('rutas', { type: 'geojson', data: EMPTY });
     map.addLayer({ id: 'rutas-borde', type: 'line', source: 'rutas', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 7 } });
     map.addLayer({ id: 'rutas', type: 'line', source: 'rutas', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#1f6feb', 'line-width': 4 } });
@@ -103,7 +107,7 @@
     map.addLayer({ id: 'radares', type: 'circle', source: 'radares', minzoom: 7, paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 7, 3, 14, 7], 'circle-color': '#1d3f9a', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
     map.addSource('bloqueos', { type: 'geojson', data: EMPTY });
     map.addLayer({ id: 'bloqueos', type: 'circle', source: 'bloqueos', paint: { 'circle-radius': 8, 'circle-color': '#e07a00', 'circle-stroke-color': '#fff', 'circle-stroke-width': 3 } });
-    drawBloqueos(); drawRutas(); drawCams();
+    drawBloqueos(); drawRutas(); drawCams(); drawClima();
   }
   map.on('click', 'radares', e => { if (picking) return; const r = byId(D.radares, e.features[0].properties.id); if (r) camPopup(r); });
   function drawRutas() {
@@ -193,6 +197,53 @@
     new maplibregl.Popup({ offset: 10 }).setLngLat([r.lon, r.lat]).setHTML(`<b>🛰 ${esc(satName(r))}</b><br>${Math.round(r.velocidad || 0)} km/h · ${r.encendido == null ? '' : r.encendido ? 'motor encendido · ' : 'motor apagado · '}${hace(r.reporte_at || r.actualizado)}${r.direccion ? '<br>' + esc(r.direccion) : ''}`).addTo(map);
   }
 
+  // ---------- Alertas del Servicio Meteorológico Nacional ----------
+  D.clima = [];
+  const NIV = { amarilla: '🟡', naranja: '🟠', roja: '🔴' };
+  const rige = f => { const n = Date.now(), p = f.properties; return (!p.desde || Date.parse(p.desde) <= n) && (!p.hasta || Date.parse(p.hasta) > n); };
+  const horaAR = t => new Date(t).toLocaleString('es-AR', { weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'America/Argentina/Buenos_Aires' });
+  async function loadClima() {
+    const { data, error } = await sb.rpc('clima_mapa');
+    if (error || !data) return;
+    D.clima = data.features || []; drawClima(); checkClimaFlota(); if (tab === 'vivo') renderLive();
+  }
+  function drawClima() {
+    const s = map.getSource && map.getSource('clima'); if (!s) return;
+    s.setData({ type: 'FeatureCollection', features: D.clima.map(f => ({ ...f, properties: { ...f.properties, ahora: rige(f) } })) });
+  }
+  function enAnillo(x, y, r) { let d = false; for (let i = 0, j = r.length - 1; i < r.length; j = i++) { const [xi, yi] = r[i], [xj, yj] = r[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) d = !d; } return d; }
+  function enPoligono(x, y, g) {
+    const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
+    return polys.some(p => enAnillo(x, y, p[0]) && !p.slice(1).some(h => enAnillo(x, y, h)));
+  }
+  // Alertas vigentes ahora en ese punto
+  const climaEn = (lon, lat) => lon == null || lat == null ? [] : D.clima.filter(f => rige(f) && enPoligono(lon, lat, f.geometry));
+  const climaChip = (lon, lat) => climaEn(lon, lat).map(f => ` · ${NIV[f.properties.nivel] || '⚠️'} ${f.properties.evento}`).join('');
+  // Aviso al dueño cuando un camión entra a una zona con alerta (una vez por camión y alerta)
+  const climaVisto = new Set();
+  function checkClimaFlota() {
+    if (!D.clima.length) return;
+    const msgs = []; let fuerte = false;
+    const ver = (key, nombre, lon, lat) => {
+      for (const f of climaEn(lon, lat)) {
+        const k = key + '|' + f.properties.evento + '|' + f.properties.hasta;
+        if (climaVisto.has(k)) continue;
+        climaVisto.add(k);
+        msgs.push(`${NIV[f.properties.nivel] || '⚠️'} ${nombre} está en zona con alerta ${f.properties.nivel || ''} por ${String(f.properties.evento).toLowerCase()} (hasta ${horaAR(f.properties.hasta)})`);
+        if (f.properties.nivel !== 'amarilla') fuerte = true;
+      }
+    };
+    for (const p of D.posiciones) if (!isStale(p)) ver('c' + p.chofer_id, posLabel(p).who, p.lon, p.lat);
+    for (const r of D.rastreo) if (!satStale(r)) ver('s' + r.asset_id, satName(r), r.lon, r.lat);
+    if (msgs.length) toast(msgs.length > 3 ? `${msgs.slice(0, 3).join(' · ')} · y ${msgs.length - 3} más (mirá "En vivo")` : msgs.join(' · '), fuerte);
+  }
+  map.on('click', 'clima', e => {
+    if (picking || map.queryRenderedFeatures(e.point, { layers: ['rutas', 'radares', 'bloqueos'].filter(l => map.getLayer(l)) }).length) return;
+    const html = e.features.map(f => { const p = f.properties;
+      return `<b>${NIV[p.nivel] || '⚠️'} Alerta ${esc(p.nivel || '')} por ${esc(String(p.evento).toLowerCase())}</b><br><span>${p.desde && p.desde !== 'null' ? 'Desde ' + esc(horaAR(p.desde)) + ' · ' : ''}hasta ${esc(horaAR(p.hasta))}</span>${p.descripcion && p.descripcion !== 'null' ? '<br><small>' + esc(p.descripcion) + '</small>' : ''}`; }).join('<hr>');
+    new maplibregl.Popup({ maxWidth: '320px' }).setLngLat(e.lngLat).setHTML(html + '<br><small>Fuente: Servicio Meteorológico Nacional</small>').addTo(map);
+  });
+
   // Lugares
   const placeMarkers = [];
   function drawLugares() {
@@ -249,7 +300,7 @@
     const satHtml = sat.map(r => {
       const cls = satOver(r) ? ' over' : satStale(r) ? ' stale' : '';
       const sub = ['Satelital', r.encendido == null ? '' : r.encendido ? 'motor encendido' : 'motor apagado', r.direccion, hace(r.reporte_at || r.actualizado)].filter(Boolean).join(' · ');
-      return `<div class="row${cls}"><span class="ico">🛰</span><span><span class="t">${esc(satName(r))} · ${Math.round(r.velocidad || 0)} km/h</span><br><span class="m">${esc(sub)}</span></span>
+      return `<div class="row${cls}"><span class="ico">🛰</span><span><span class="t">${esc(satName(r))} · ${Math.round(r.velocidad || 0)} km/h${esc(climaChip(r.lon, r.lat))}</span><br><span class="m">${esc(sub)}</span></span>
         <span class="acts"><button type="button" class="btn ghost sm" data-satfly="${esc(r.asset_id)}">Ver</button></span></div>`;
     }).join('');
     if (!D.posiciones.length) { box.innerHTML = satHtml || '<p class="empty">Todavía ningún chofer mandó su ubicación. Aparece cuando abren la app con la cuenta de la empresa.</p>'; return; }
@@ -258,7 +309,7 @@
       const L = posLabel(p), v = p.viaje_id && byId(D.viajes, p.viaje_id), d = v && lugar(v.destino_id);
       const cls = isOver(p) ? ' over' : isStale(p) ? ' stale' : '';
       const sub = [L.truck, d ? 'va a ' + d.nombre : p.destino ? 'va a ' + p.destino : '', hace(p.at) + (isStale(p) ? ' (sin datos nuevos)' : '')].filter(Boolean).join(' · ');
-      return `<div class="row${cls}"><span class="ico">🚚</span><span><span class="t">${esc(L.who)} · ${Math.round(p.velocidad || 0)} km/h</span><br><span class="m">${esc(sub)}</span></span>
+      return `<div class="row${cls}"><span class="ico">🚚</span><span><span class="t">${esc(L.who)} · ${Math.round(p.velocidad || 0)} km/h${esc(climaChip(p.lon, p.lat))}</span><br><span class="m">${esc(sub)}</span></span>
         <span class="acts"><button type="button" class="btn ghost sm" data-fly="${esc(p.chofer_id)}">Ver</button></span></div>`;
     }).join('') + satHtml;
   }
@@ -973,7 +1024,8 @@
       .subscribe();
   }
   // "hace X min" y camiones sin datos se actualizan solos
-  setInterval(() => { if (me) { drawTrucks(); drawSat(); renderSitrack(); if (tab === 'vivo') renderLive(); } }, 30000);
+  setInterval(() => { if (me) { drawTrucks(); drawSat(); drawClima(); checkClimaFlota(); renderSitrack(); if (tab === 'vivo') renderLive(); } }, 30000);
+  setInterval(() => { if (me) loadClima(); }, 10 * 60 * 1000);   // las alertas del SMN se actualizan cada 15 minutos
 
   // ---------- Entrar / salir ----------
   let me = null;
@@ -992,7 +1044,7 @@
     $('f-admin').hidden = p.rol !== 'dueno';
     document.body.classList.toggle('lector', !!p.solo_lectura);   // solo mira: se esconden los botones para cambiar cosas
     $('login').hidden = true; $('layout').hidden = false; map.resize();
-    await loadAll(); subscribe(); loadRadares(); loadReportes();
+    await loadAll(); subscribe(); loadRadares(); loadReportes(); loadClima();
     if ('Notification' in window && Notification.permission === 'default') document.addEventListener('click', () => Notification.requestPermission().catch(() => {}), { once: true });
   }
   $('f-login').addEventListener('submit', async e => {

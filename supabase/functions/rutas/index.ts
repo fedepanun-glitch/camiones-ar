@@ -272,6 +272,17 @@ Deno.serve(async req => {
             // Restricciones de la ANSV que caen en el horario del viaje (si sale ahora)
             try { elegida.properties.ansv = ansvEnRuta(await cargarAnsv(), elegida.geometry?.coordinates || [], elegida.properties?.summary?.duration || 0); }
             catch { elegida.properties.ansv = []; }
+            // Alertas del SMN (tormentas, viento, Zonda, nieve, niebla…) en las zonas que cruza el camino,
+            // solo si rigen cuando el camión pasa por ahí (saliendo ahora, a la velocidad que calcula la ruta)
+            try {
+              const { data: cl } = await supabase.rpc('clima_en_ruta', { linea: elegida.geometry });
+              const dist = elegida.properties?.summary?.distance || 0, dur = elegida.properties?.summary?.duration || 0, t0 = Date.now();
+              const cuando = (m: number) => t0 + (dist > 0 ? m / dist * dur * 1000 : 0);
+              elegida.properties.clima = (cl || []).map((a: { entra: number; sale: number; desde: string | null; hasta: string | null }) => {
+                const te = cuando(a.entra), ts = cuando(a.sale) + 3600_000;   // una hora de margen por demoras
+                return { ...a, llega: new Date(te).toISOString(), rige: (!a.desde || Date.parse(a.desde) <= ts) && (!a.hasta || Date.parse(a.hasta) >= te) };
+              }).filter((a: { rige: boolean }) => a.rige);
+            } catch { elegida.properties.clima = []; }
             d.features = [elegida, ...d.features.filter((_: unknown, i: number) => i !== mejor)];
           }
           return new Response(JSON.stringify(d), { status: 200, headers: { ...CORS, 'Content-Type': 'application/json' } });
