@@ -1147,15 +1147,38 @@
     }
     return { f: g.factor ?? 1 };
   }
+  // Hora pico: tarifas.pico = { factor: 1.2, franjas: [{ dias: [1..7] (1 = lunes), horas: [["07:00","11:00"]], hacia: 'caba'|'provincia' }] }
+  // Se mira la hora en que el camión llega al peaje (saliendo ahora, o desde donde va si está en viaje), en hora argentina.
+  const OBELISCO = [-34.6037, -58.3816];
+  function puntoEn(rt, m) { const c = rt.coords, cum = rt.cum; let i = 0; while (i < cum.length - 1 && cum[i] < m) i++; return c[i]; }
+  function horaLlega(p, rt) {
+    const done = rt === route && mode === 'nav' && typeof nav === 'object' ? (route.cum[nav.idx] || 0) : 0;
+    const falta = Math.max(0, (p.metros || 0) - done);
+    return new Date(Date.now() + (rt.total ? rt.time * 1000 * falta / rt.total : 0));
+  }
+  function esPico(p, rt) {
+    const pc = p.tarifas && p.tarifas.pico; if (!pc || !Array.isArray(pc.franjas) || !rt || !rt.coords || !rt.cum || p.metros == null) return false;
+    const ar = new Date(horaLlega(p, rt).getTime() - 3 * 3600_000), dia = ar.getUTCDay() || 7, min = ar.getUTCHours() * 60 + ar.getUTCMinutes();
+    const mm = t => { const [a, b] = t.split(':').map(Number); return a * 60 + (b || 0); };
+    let hacia = null;
+    return pc.franjas.some(f => {
+      if (f.dias && !f.dias.includes(dia)) return false;
+      if (!(f.horas || []).some(([a, b]) => min >= mm(a) && min < mm(b))) return false;
+      if (!f.hacia) return true;
+      if (hacia == null) { const a = puntoEn(rt, p.metros), b = puntoEn(rt, p.metros + 600); hacia = dist(b, OBELISCO) < dist(a, OBELISCO) ? 'caba' : 'provincia'; }
+      return f.hacia === hacia;
+    });
+  }
   function precioPeaje(p, T, rt) {
     const v = tarifaPeaje(p, T); if (!v) return { v: null };
     const { f, pagado } = factorPeaje(p, rt);
-    return { v: v * f, pagado, doble: f > 1 };
+    const pico = !pagado && esPico(p, rt);
+    return { v: v * f * (pico ? (+p.tarifas.pico.factor || 1) : 1), pagado, doble: f > 1, pico };
   }
   function peajesDe(rt) {
     const T = truck(), ps = (rt.puntos || []).filter(x => x.clase === 'peaje');
-    let total = 0, sin = 0; for (const p of ps) { const { v } = precioPeaje(p, T, rt); if (v != null) total += v; else sin++; }
-    return { n: ps.length, total, sin, nota: T && T.ej ? '' : ' (cargá los ejes del camión en el panel para la tarifa justa)' };
+    let total = 0, sin = 0, pico = 0; for (const p of ps) { const x = precioPeaje(p, T, rt); if (x.v != null) total += x.v; else sin++; if (x.pico) pico++; }
+    return { n: ps.length, total, sin, nota: (pico ? ` (${pico === 1 ? '1 peaje' : pico + ' peajes'} en hora pico, más caro${pico === 1 ? '' : 's'})` : '') + (T && T.ej ? '' : ' (cargá los ejes del camión en el panel para la tarifa justa)') };
   }
   // Aviso al acercarse a un peaje o a un puesto de control (sanitario, aduana, balanza)
   const ptoWarn = {};
@@ -1169,14 +1192,14 @@
       ptoWarn[p.id] = Date.now();
       const metros = d > 700 ? '1 kilómetro' : Math.max(100, Math.round(d / 100) * 100) + ' metros';
       if (p.clase === 'peaje') {
-        const { v, pagado } = precioPeaje(p, T, route);
+        const { v, pagado, pico } = precioPeaje(p, T, route);
         const nom = p.nombre && p.nombre !== 'Peaje' ? p.nombre + ' ' : '';
         if (pagado) {
           showAlert(`🛣️ Peaje ${nom}a ${metros}: ya lo pagaste en ${pagado}`, 'orange');
           speak(`Peaje a ${metros}. Ya lo pagaste en ${pagado}.`);
         } else {
-          showAlert(`🛣️ Peaje ${nom}a ${metros}${v ? ': $' + Math.round(v).toLocaleString('es-AR') : ''}`, 'orange');
-          speak(`Peaje a ${metros}${v ? '. Sale ' + Math.round(v) + ' pesos' : ''}.`);
+          showAlert(`🛣️ Peaje ${nom}a ${metros}${v ? ': $' + Math.round(v).toLocaleString('es-AR') + (pico ? ' (hora pico)' : '') : ''}`, 'orange');
+          speak(`Peaje a ${metros}${v ? '. Sale ' + Math.round(v) + ' pesos' + (pico ? ', hora pico' : '') : ''}.`);
         }
       } else {
         const n = CTRL[p.tipo] || CTRL.otro;
