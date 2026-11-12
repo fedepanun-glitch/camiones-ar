@@ -235,14 +235,15 @@ object Nube {
     }
 
     /** Viaje empezado o terminado (la misma función que usa la app web). */
-    suspend fun estadoViaje(id: String, estado: String) = withContext(Dispatchers.IO) {
+    suspend fun estadoViaje(id: String, estado: String): Unit = withContext(Dispatchers.IO) {
         runCatching {
             pedir("POST", "/rest/v1/rpc/cambiar_estado_viaje", JSONObject().put("p_viaje", id).put("p_estado", estado).toString(), token())
         }
+        Unit
     }
 
     /** Manda la ubicación al panel del dueño (misma tabla que la app web). */
-    suspend fun posicion(p: Geo, kmh: Double, rumbo: Double, precision: Double, camionId: String?, destino: String?) = withContext(Dispatchers.IO) {
+    suspend fun posicion(p: Geo, kmh: Double, rumbo: Double, precision: Double, camionId: String?, destino: String?): Unit = withContext(Dispatchers.IO) {
         val u = uid ?: return@withContext
         val j = JSONObject().put("chofer_id", u).put("lat", p.lat).put("lon", p.lon).put("velocidad", kmh).put("rumbo", rumbo)
             .put("precision_m", precision).put("at", Instant.now().toString())
@@ -251,6 +252,7 @@ object Nube {
             pedir("POST", "/rest/v1/posiciones?on_conflict=chofer_id", j.toString(), token(),
                 mapOf("Prefer" to "resolution=merge-duplicates,return=minimal"))
         }
+        Unit
     }
 }
 
