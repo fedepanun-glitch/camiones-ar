@@ -3,13 +3,18 @@
 App de Android que muestra Camiones AR en la pantalla del auto (Android Auto). Usa la misma cuenta, los mismos
 datos y el mismo cálculo de rutas para camión que la app web.
 
-## Qué hace (versión 0.1)
+## Qué hace (versión 0.2)
 
 - **En el celular:** entrar con el usuario y PIN del chofer (o el email del dueño) y dar permiso de ubicación.
 - **En el auto:**
   - **Inicio:** tus viajes asignados, los lugares de la empresa y el botón **Buscar**.
-  - **Vista previa:** duración, kilómetros, peajes con el precio según los ejes, puestos de control y alertas del SMN, con el botón **Ir**.
-  - **Navegación:** indicaciones giro a giro con voz y mapa. Avisa al acercarse a peajes, controles (sanitarios, aduanas, balanzas), zonas con alerta del SMN y barrios populares. Si te desviás, recalcula el camino. Manda la ubicación al panel del dueño cada 15 segundos.
+  - **Vista previa:** duración y kilómetros. Peajes con el precio según los ejes, el sentido y la hora pico (los feriados cuentan como domingo). Puestos de control y alertas del SMN, con el botón **Ir**.
+  - **Navegación:** indicaciones giro a giro con voz y mapa.
+    - Esquiva lo que el camión no puede pasar: puentes con límite de peso o altura (Vialidad), cortes y puentes bajos marcados por otros choferes, y calles bloqueadas por la empresa.
+    - Avisa al acercarse a eso, a los peajes (o "ya lo pagaste en…"), a los controles (sanitarios, aduanas, balanzas), a las zonas con alerta del SMN, a los barrios populares y a los demás reportes.
+    - Si te desviás, recalcula el camino. Manda la ubicación al panel del dueño cada 15 segundos.
+    - Botón **Reportar**: corte, control, balanza, puente bajo (con la altura), zona insegura, camino roto, bache o calle angosta. Si marcás un corte o un puente bajo, recalcula esquivándolo.
+    - Si el destino es un viaje asignado, queda **en curso** al salir y **terminado** al llegar, como en la app web.
 
 ## Cómo conseguir el APK
 
