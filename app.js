@@ -999,7 +999,7 @@
       store.set('avoids', avoids); drawAvoids();
     }
     if (!via.error) { viajes = via.data; store.set('viajes', viajes); }
-    loadRadares(); loadReportes(); loadOficiales();
+    loadRadares(); loadReportes(); loadOficiales(); loadFeriados();
     if (mode === 'home') renderFavs();
   }
 
@@ -1097,6 +1097,14 @@
     corte: ['⛔', 'Corte'], altura: ['🌉', 'Puente bajo'], angosta: ['↔️', 'Calle angosta'], otro: ['⚠️', 'Atención'],
     inseguro: ['🚨', 'Zona insegura'],
   };
+  // Feriados nacionales (para la hora pico de los peajes: "sábados, domingos y feriados")
+  let feriados = new Set(NUBE ? store.get('feriados', []) : []);
+  async function loadFeriados() {
+    if (!NUBE || !session) return;
+    const { data, error } = await NUBE.sb.from('feriados').select('fecha').eq('ambito', 'nacional').in('tipo', ['inamovible', 'trasladable', 'especial']);
+    if (error || !data) return;
+    feriados = new Set(data.map(f => f.fecha)); store.set('feriados', [...feriados]);
+  }
   let reportes = NUBE ? store.get('reportes', []) : [];
   async function loadReportes() {
     if (!NUBE || !session) return;
@@ -1158,7 +1166,7 @@
   }
   function esPico(p, rt) {
     const pc = p.tarifas && p.tarifas.pico; if (!pc || !Array.isArray(pc.franjas) || !rt || !rt.coords || !rt.cum || p.metros == null) return false;
-    const ar = new Date(horaLlega(p, rt).getTime() - 3 * 3600_000), dia = ar.getUTCDay() || 7, min = ar.getUTCHours() * 60 + ar.getUTCMinutes();
+    const ar = new Date(horaLlega(p, rt).getTime() - 3 * 3600_000), dia = feriados.has(ar.toISOString().slice(0, 10)) ? 7 : (ar.getUTCDay() || 7), min = ar.getUTCHours() * 60 + ar.getUTCMinutes();
     const mm = t => { const [a, b] = t.split(':').map(Number); return a * 60 + (b || 0); };
     let hacia = null;
     return pc.franjas.some(f => {
