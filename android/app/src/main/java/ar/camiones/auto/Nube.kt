@@ -174,18 +174,71 @@ object Nube {
         }
     }
 
-    /** Ruta para camión (perfil HGV, zonas prohibidas, peajes, alertas…), igual que la app web. */
-    suspend fun ruta(desde: Geo, hasta: Geo, c: Camion): Ruta = withContext(Dispatchers.IO) {
+    /**
+     * Ruta para camión (perfil HGV, zonas prohibidas, peajes, alertas…), igual que la app web.
+     * Esquiva los obstáculos que el camión no puede pasar; si con ellos el servicio no encuentra camino
+     * (p. ej. viajes muy largos), la calcula sin esquivarlos y marca esquivaFallo (igual se avisan al acercarse).
+     */
+    suspend fun ruta(desde: Geo, hasta: Geo, c: Camion, obstaculos: List<Obstaculo> = emptyList()): Ruta = withContext(Dispatchers.IO) {
         val restr = JSONObject().put("height", c.alto).put("weight", c.peso).put("length", c.largo).put("width", c.ancho)
             .put("axleload", c.eje).put("hazmat", c.peligrosa)
-        val body = JSONObject()
-            .put("coordinates", JSONArray().put(JSONArray().put(desde.lon).put(desde.lat)).put(JSONArray().put(hasta.lon).put(hasta.lat)))
-            .put("language", "es").put("instructions", true).put("units", "m")
-            .put("radiuses", JSONArray().put(2000).put(2000))
-            .put("options", JSONObject().put("vehicle_type", "hgv").put("profile_params", JSONObject().put("restrictions", restr)))
-        val d = funcion("rutas", JSONObject().put("op", "directions").put("elegir", true)
-            .put("camion", JSONObject().put("largo", c.largo).put("peso", c.peso)).put("body", body))
-        Ruta.desde(d)
+        fun pedido(conPoligonos: Boolean): JSONObject {
+            val opciones = JSONObject().put("vehicle_type", "hgv").put("profile_params", JSONObject().put("restrictions", restr))
+            if (conPoligonos) Avisos.poligonos(obstaculos.filter { it.evitar }.map { it.geo }, desde, hasta)?.let { opciones.put("avoid_polygons", it) }
+            val body = JSONObject()
+                .put("coordinates", JSONArray().put(JSONArray().put(desde.lon).put(desde.lat)).put(JSONArray().put(hasta.lon).put(hasta.lat)))
+                .put("language", "es").put("instructions", true).put("units", "m")
+                .put("radiuses", JSONArray().put(2000).put(2000))
+                .put("options", opciones)
+            return JSONObject().put("op", "directions").put("elegir", true)
+                .put("camion", JSONObject().put("largo", c.largo).put("peso", c.peso)).put("body", body)
+        }
+        val esquivar = obstaculos.any { it.evitar }
+        val r = try {
+            Ruta.desde(funcion("rutas", pedido(esquivar)))
+        } catch (e: Exception) {
+            if (!esquivar) throw e
+            Ruta.desde(funcion("rutas", pedido(false))).also { it.esquivaFallo = true }
+        }
+        r.obstaculos = Avisos.enRuta(r, obstaculos)
+        r
+    }
+
+    /** Puentes con límite (Vialidad), reportes de los choferes y calles bloqueadas. */
+    suspend fun obstaculos(c: Camion): List<Obstaculo> = withContext(Dispatchers.IO) {
+        val out = mutableListOf<Obstaculo>()
+        runCatching { out += Avisos.oficiales(lista("/rest/v1/restricciones_oficiales?select=id,tipo,ruta,km,nombre,valor,valor_eje,lat,lon&activo=eq.true&lat=not.is.null&limit=5000"), c) }
+        runCatching { out += Avisos.reportes(lista("/rest/v1/reportes?select=id,tipo,lat,lon,dato&activo=eq.true&limit=5000"), c) }
+        runCatching { out += Avisos.bloqueos(lista("/rest/v1/bloqueos?select=id,lat,lon,calle&activo=eq.true&limit=5000")) }
+        out
+    }
+
+    /** Feriados nacionales (para la hora pico de los peajes). */
+    suspend fun feriados(): Set<String> = withContext(Dispatchers.IO) {
+        val a = runCatching { lista("/rest/v1/feriados?select=fecha&ambito=eq.nacional&tipo=in.(inamovible,trasladable,especial)") }.getOrNull()
+            ?: return@withContext emptySet()
+        (0 until a.length()).map { a.getJSONObject(it).texto("fecha") }.toSet()
+    }
+
+    /** Marca algo en el camino (como la app web): si ya estaba marcado cerca, lo confirma. Devuelve el texto para el chofer. */
+    suspend fun reportar(tipo: String, p: Geo, dato: Double?, existentes: List<Obstaculo>): String = withContext(Dispatchers.IO) {
+        val cerca = existentes.firstOrNull { it.id.startsWith("r") && it.tipo == tipo && G.dist(it.geo, p) < 80 }
+        if (cerca != null) {
+            pedir("POST", "/rest/v1/rpc/confirmar_reporte", JSONObject().put("p_id", cerca.id.removePrefix("r")).toString(), token())
+            return@withContext "Ya estaba marcado: lo confirmaste. ¡Gracias!"
+        }
+        val j = JSONObject().put("tipo", tipo).put("lat", Math.round(p.lat * 1e6) / 1e6).put("lon", Math.round(p.lon * 1e6) / 1e6)
+            .put("dato", dato ?: JSONObject.NULL).put("creado_por", uid)
+        val r = pedir("POST", "/rest/v1/reportes", j.toString(), token(), mapOf("Prefer" to "return=minimal"))
+        if (r.code !in 200..299) throw Exception("No se pudo marcar (¿hay señal?). Probá de nuevo.")
+        "Marcado. ¡Gracias!"
+    }
+
+    /** Viaje empezado o terminado (la misma función que usa la app web). */
+    suspend fun estadoViaje(id: String, estado: String) = withContext(Dispatchers.IO) {
+        runCatching {
+            pedir("POST", "/rest/v1/rpc/cambiar_estado_viaje", JSONObject().put("p_viaje", id).put("p_estado", estado).toString(), token())
+        }
     }
 
     /** Manda la ubicación al panel del dueño (misma tabla que la app web). */

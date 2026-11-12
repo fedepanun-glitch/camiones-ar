@@ -41,6 +41,7 @@ class NavScreen(ctx: CarContext, private val app: Sesion, private var ruta: Ruta
         lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onCreate(owner: LifecycleOwner) {
                 app.nav.navigationStarted()
+                destino.viajeId?.let { id -> lifecycleScope.launch { Nube.estadoViaje(id, "en_curso") } }
                 app.mapa.mostrarRuta(ruta.coords, encuadrar = false)
                 app.alMoverse = { l -> moverse(l) }
                 app.ultima?.let { moverse(it) }
@@ -53,10 +54,12 @@ class NavScreen(ctx: CarContext, private val app: Sesion, private var ruta: Ruta
         })
     }
 
-    private fun terminar(texto: String?) {
+    /** llego = llegó al destino (el viaje asignado queda terminado, como en la app web). */
+    private fun terminar(texto: String?, llego: Boolean = false) {
         if (terminado) return
         terminado = true
         app.nav.navigationEnded()
+        if (llego) destino.viajeId?.let { id -> lifecycleScope.launch { Nube.estadoViaje(id, "terminado") } }
         texto?.let { app.voz.decir(it); CarToast.makeText(carContext, it, CarToast.LENGTH_LONG).show() }
         app.mapa.mostrarRuta(null, encuadrar = false)
         screenManager.popToRoot()
@@ -84,7 +87,7 @@ class NavScreen(ctx: CarContext, private val app: Sesion, private var ruta: Ruta
         app.mapa.mover(p, rumbo, true)
 
         // ¿Llegó?
-        if (ruta.total - hecho < 40 || G.dist(p, destino.geo) < 40) { terminar("Llegaste a ${destino.nombre}."); return }
+        if (ruta.total - hecho < 40 || G.dist(p, destino.geo) < 40) { terminar("Llegaste a ${destino.nombre}.", llego = true); return }
 
         // ¿Se desvió? (más de 70 m del camino durante 8 segundos, con buen GPS)
         val ahora = System.currentTimeMillis()
@@ -101,13 +104,19 @@ class NavScreen(ctx: CarContext, private val app: Sesion, private var ruta: Ruta
         invalidate()
     }
 
+    /** El chofer marcó un corte o un puente bajo: se recalcula esquivándolo. */
+    private fun esquivarNuevo() {
+        val p = app.ubicacion() ?: return
+        recalcular(p)
+    }
+
     private fun recalcular(p: Geo) {
         recalculando = true; ultimoRecalculo = System.currentTimeMillis()
         app.voz.decir("Recalculando.")
         invalidate()
         lifecycleScope.launch {
             try {
-                ruta = Nube.ruta(p, destino.geo, app.camion ?: Camion.PorDefecto)
+                ruta = Nube.ruta(p, destino.geo, app.camion ?: Camion.PorDefecto, app.obstaculos)
                 idx = 0; hecho = 0.0
                 dichos.removeAll { it.startsWith("paso") }
                 app.mapa.mostrarRuta(ruta.coords, encuadrar = false)
@@ -152,10 +161,15 @@ class NavScreen(ctx: CarContext, private val app: Sesion, private var ruta: Ruta
             if (adelante < 0 || adelante > 1100) continue
             val m = metrosTexto(adelante)
             if (pt.clase == "peaje") {
-                val v = pt.tarifa(ejes)
+                val pr = Peajes.precio(pt, ruta, ejes, hecho, app.feriados)
                 val nombre = if (pt.nombre.isNotEmpty() && pt.nombre != "Peaje") " ${pt.nombre}" else ""
-                decirUnaVez("p${pt.id}", "Peaje a $m." + (v?.let { " Sale ${it.roundToInt()} pesos." } ?: ""),
-                    "Peaje$nombre a $m" + (v?.let { ": ${pesos(it)}" } ?: ""))
+                if (pr.pagadoEn != null) {
+                    decirUnaVez("p${pt.id}", "Peaje a $m. Ya lo pagaste en ${pr.pagadoEn}.", "Peaje$nombre a $m: ya pagado en ${pr.pagadoEn}")
+                } else {
+                    val v = pr.valor
+                    decirUnaVez("p${pt.id}", "Peaje a $m." + (v?.let { " Sale ${it.roundToInt()} pesos" + (if (pr.pico) ", hora pico." else ".") } ?: ""),
+                        "Peaje$nombre a $m" + (v?.let { ": ${pesos(it)}" + if (pr.pico) " (hora pico)" else "" } ?: ""))
+                }
             } else {
                 val n = when (pt.tipo) { "sanitario" -> "Control sanitario"; "aduana" -> "Aduana"; "balanza" -> "Balanza"; "policial" -> "Control policial"; else -> "Puesto de control" }
                 decirUnaVez("p${pt.id}", "$n a $m. Tené los papeles a mano.", "$n a $m" + if (pt.nombre.isNotEmpty()) ": ${pt.nombre}" else "")
@@ -178,6 +192,14 @@ class NavScreen(ctx: CarContext, private val app: Sesion, private var ruta: Ruta
             val donde = if (adelante > 500) "en ${max(1, (adelante / 1000).roundToInt())} kilómetros" else "en esta zona"
             decirUnaVez("clima${a.evento}${a.entra}", "Atención. Alerta ${a.nivel} por $ev $donde. $consejo",
                 "Alerta ${a.nivel} por $ev: $donde")
+        }
+        // Puentes con límite, cortes, puentes bajos, zonas inseguras y otros reportes sobre el camino, a 600 m o menos
+        for (x in ruta.obstaculos) {
+            val adelante = x.metros - hecho
+            if (adelante < 0 || adelante > 600) continue
+            if (x.o.id.startsWith("of") && !x.o.evitar) continue   // límite oficial que este camión cumple
+            val m = "${max(50, (adelante / 50).roundToInt() * 50)} metros"
+            decirUnaVez("o${x.o.id}", "${x.o.voz} a $m.", "${x.o.texto} a $m")
         }
         // Barrios populares a menos de 450 m (registro oficial RENABAP)
         for ((i, b) in ruta.precaucion.withIndex()) {
@@ -217,6 +239,9 @@ class NavScreen(ctx: CarContext, private val app: Sesion, private var ruta: Ruta
 
     override fun onGetTemplate(): Template {
         val acciones = ActionStrip.Builder()
+            .addAction(Action.Builder().setTitle("Reportar").setOnClickListener {
+                screenManager.push(ReportarScreen(carContext, app) { tipo -> if (tipo == "corte" || tipo == "altura") esquivarNuevo() })
+            }.build())
             .addAction(Action.Builder().setTitle("Terminar").setOnClickListener { terminar(null) }.build())
             .build()
         val b = NavigationTemplate.Builder().setActionStrip(acciones)

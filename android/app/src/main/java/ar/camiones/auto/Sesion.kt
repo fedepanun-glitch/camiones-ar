@@ -33,6 +33,9 @@ class Sesion : Session(), LocationListener {
     lateinit var voz: Voz
     lateinit var nav: NavigationManager
     var camion: Camion? = null
+    /** Puentes con límite, reportes y bloqueos (se cargan al abrir). */
+    var obstaculos: List<Obstaculo> = emptyList()
+    var feriados: Set<String> = emptySet()
     var ultima: Location? = null
         private set
     /** La pantalla de navegación se suscribe acá para recibir cada posición del GPS. */

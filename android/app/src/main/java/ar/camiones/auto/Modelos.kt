@@ -84,6 +84,10 @@ class Ruta(
 ) {
     /** Metros acumulados desde la salida hasta cada punto del dibujo. */
     val cum: DoubleArray = DoubleArray(coords.size).also { c -> for (i in 1 until coords.size) c[i] = c[i - 1] + G.dist(coords[i - 1], coords[i]) }
+    /** Puentes, cortes, reportes y bloqueos que quedaron sobre el camino. */
+    var obstaculos: List<ObstaculoEnRuta> = emptyList()
+    /** true si no se pudieron esquivar los obstáculos (se avisan igual al acercarse). */
+    var esquivaFallo = false
     val total: Double get() = if (cum.isEmpty()) 0.0 else cum.last()
 
     fun metrosDe(indice: Int): Double = cum[indice.coerceIn(0, cum.size - 1)]

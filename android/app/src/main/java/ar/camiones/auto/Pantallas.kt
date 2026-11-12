@@ -53,6 +53,9 @@ class InicioScreen(ctx: CarContext, private val app: Sesion) : Screen(ctx) {
                 viajes = Nube.viajes()
                 lugares = Nube.lugares()
                 error = null
+                invalidate()
+                app.obstaculos = Nube.obstaculos(app.camion ?: Camion.PorDefecto)
+                app.feriados = Nube.feriados()
             } catch (e: Exception) { error = e.message ?: "No se pudieron cargar los datos." }
             invalidate()
         }
@@ -145,7 +148,7 @@ class VistaPreviaScreen(ctx: CarContext, private val app: Sesion, private val de
                 invalidate(); return@launch
             }
             try {
-                val r = Nube.ruta(desde, destino.geo, app.camion ?: Camion.PorDefecto)
+                val r = Nube.ruta(desde, destino.geo, app.camion ?: Camion.PorDefecto, app.obstaculos)
                 ruta = r; error = null
                 app.mapa.mostrarRuta(r.coords, encuadrar = true)
             } catch (e: Exception) { error = e.message ?: "No se pudo calcular el camino." }
@@ -158,12 +161,19 @@ class VistaPreviaScreen(ctx: CarContext, private val app: Sesion, private val de
         val peajes = r.puntos.filter { it.clase == "peaje" }
         if (peajes.isNotEmpty()) {
             val ejes = app.camion?.ejes
-            val total = peajes.mapNotNull { it.tarifa(ejes) }.sum()
-            partes += (if (peajes.size == 1) "1 peaje" else "${peajes.size} peajes") + (if (total > 0) " ≈ ${pesos(total)}" else "")
+            val precios = peajes.map { Peajes.precio(it, r, ejes, 0.0, app.feriados) }
+            val total = precios.mapNotNull { it.valor }.sum()
+            val pico = precios.count { it.pico }
+            partes += (if (peajes.size == 1) "1 peaje" else "${peajes.size} peajes") + (if (total > 0) " ≈ ${pesos(total)}" else "") +
+                (if (pico > 0) " (hora pico)" else "")
         }
         val controles = r.puntos.count { it.clase == "control" }
         if (controles > 0) partes += if (controles == 1) "1 control" else "$controles controles"
         if (r.clima.isNotEmpty()) partes += "⚠ " + r.clima.joinToString(", ") { "alerta ${it.nivel} por ${it.evento.lowercase()}" }
+        // Si no se pudieron esquivar (viaje muy largo), se avisa acá; si se esquivaron, ya no están en el camino
+        val noPasa = r.obstaculos.count { it.o.evitar }
+        if (r.esquivaFallo && noPasa > 0) partes += "⛔ " + (if (noPasa == 1) "1 paso" else "$noPasa pasos") +
+            " que este camión no puede usar: revisá antes de salir"
         return partes.joinToString(" · ").ifEmpty { "Camino para camión" }
     }
 
