@@ -359,6 +359,19 @@
       return d.features[0].properties.label.replace(/, Argentina$/, '');
     } catch (e) { return 'Punto en el mapa'; }
   }
+  // Pegar: en iPhone las apps web no aparecen en "Compartir", así que se copia el link y se pega acá
+  $('b-pegar').addEventListener('click', async () => {
+    showErr('');
+    let t = '';
+    try { t = (await navigator.clipboard.readText() || '').trim(); } catch (e) { /* sin permiso: se pega a mano */ }
+    if (!t) {
+      $('q').focus();
+      showErr('No pude leer lo copiado. Mantené apretado el cuadro de búsqueda y tocá "Pegar".');
+      return;
+    }
+    $('q').value = t.slice(0, 1000);
+    $('f-search').requestSubmit();
+  });
   $('f-search').addEventListener('submit', async e => {
     e.preventDefault(); showErr('');
     const text = $('q').value.trim();
