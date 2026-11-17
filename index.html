@@ -57,13 +57,14 @@
   <div class="view" id="v-home">
     <form id="f-search" class="search" autocomplete="off">
       <label for="q" class="sr">¿A dónde vas?</label>
-      <input id="q" type="search" placeholder="¿A dónde vas? Dirección, esquina o link de Maps" enterkeyhint="search">
+      <input id="q" type="search" placeholder="¿A dónde vas?" enterkeyhint="search">
+      <button type="button" class="paste-search" id="b-pegar" aria-label="Pegar link o dirección copiada">📋<span>Pegar</span></button>
       <button type="submit" class="go-search" aria-label="Buscar">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.6"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/></svg>
       </button>
     </form>
     <div class="favs" id="favs"></div>
-    <p class="tip">Escribí la empresa o la calle con altura. También podés tocar el mapa, o pegar la ubicación copiada de Google Maps (los números, por ejemplo -34.41, -58.59).</p>
+    <p class="tip">Escribí la calle con altura o la esquina (por ejemplo "Gorriti y Vértiz, Boulogne"). Si te mandaron un link de Google Maps, copialo y tocá <b>📋 Pegar</b>.</p>
   </div>
 
   <!-- Resultados -->
