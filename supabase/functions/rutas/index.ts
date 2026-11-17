@@ -193,6 +193,173 @@ function ansvEnRuta(rs: Ansv[], c: number[][], durS: number, salida = new Date()
   return out;
 }
 
+// ---------- Buscador: links de Google Maps, coordenadas y direcciones exactas ----------
+// Además del buscador general (Pelias), se entienden:
+//  - links de Google Maps (también el texto que manda WhatsApp con el link): si traen coordenadas se usan tal cual;
+//    si solo traen la dirección (p. ej. "Virrey Vértiz & Gorriti, Boulogne"), se busca esa dirección;
+//  - coordenadas pegadas ("-34.51, -58.56");
+//  - calle con altura o esquina ("Gorriti 1234", "Vértiz y Gorriti"): primero en Georef, el servicio oficial de
+//    direcciones de Argentina (apis.datos.gob.ar), que ubica la altura exacta.
+type Lugar = { lat: number; lon: number; label: string; name: string; housenumber?: string; fuente: string };
+const feature = (l: Lugar) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [l.lon, l.lat] },
+  properties: { label: l.label, name: l.name, housenumber: l.housenumber ?? null, fuente: l.fuente } });
+const enArgentina = (la: number, lo: number) => la < -21 && la > -56 && lo < -53 && lo > -74.5;
+const sinTildes = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const norm = (s: string) => sinTildes(s).toLowerCase().replace(/\s+/g, ' ').trim();
+const decodificar = (s: string) => { try { return decodeURIComponent(s.replace(/\+/g, ' ')); } catch { return s.replace(/\+/g, ' '); } };
+const titulo = (s: string) => s.toLowerCase().replace(/(^|[\s(.-])(\p{L})/gu, (_, a, b) => a + b.toUpperCase())
+  .replace(/\b(De|Del|La|Las|Los|Y|E)\b/g, m => m.toLowerCase()).replace(/\bAv\b/g, 'Av.');
+
+function coordsDe(s: string): [number, number] | null {
+  const pats = [
+    /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/,                                                   // marcador del lugar (lo más exacto)
+    /[?&](?:q|query|ll|daddr|destination|center|saddr)=(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)/i,  // ?q=-34.5,-58.5
+    /\/place\/(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)/,
+    /@(-?\d+\.\d+),(-?\d+\.\d+)/,                                                        // centro del mapa
+    /^\s*(-?\d{1,2}\.\d{3,})\s*[,; ]\s*(-?\d{1,3}\.\d{3,})\s*$/,                          // "-34.51, -58.56"
+  ];
+  for (const p of pats) {
+    const m = s.match(p);
+    if (m) { const la = +m[1], lo = +m[2]; if (enArgentina(la, lo)) return [la, lo]; }
+  }
+  return null;
+}
+
+/** Sigue el link (maps.app.goo.gl → google.com/maps…) y saca coordenadas o, si no hay, la dirección escrita. */
+async function abrirLink(url: string): Promise<{ coords: [number, number] | null; texto: string | null }> {
+  let u = url, texto: string | null = null;
+  // El texto se saca antes de decodificar: la dirección puede traer un "&" ("Vértiz & Gorriti")
+  const textoDe = (x: string) => {
+    try {
+      const uu = new URL(x);
+      for (const k of ['q', 'query', 'daddr', 'destination']) { const v = uu.searchParams.get(k); if (v && v.trim()) return v.trim(); }
+      const p = uu.pathname.match(/\/place\/([^/@]+)/)?.[1];
+      if (p) return decodificar(p).trim();
+    } catch { /* no es un link válido */ }
+    return null;
+  };
+  for (let i = 0; i < 6; i++) {
+    const c = coordsDe(decodificar(u)); if (c) return { coords: c, texto: null };
+    texto = textoDe(u) || texto;
+    let host = '';
+    try { host = new URL(u).hostname; } catch { break; }
+    if (!/(^|\.)(goo\.gl|g\.co|google\.[a-z.]+)$/.test(host)) break;
+    const r = await fetch(u, { redirect: 'manual', headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 14) CamionesAR' }, signal: AbortSignal.timeout(8000) });
+    const loc = r.headers.get('location');
+    await r.body?.cancel();
+    if (!loc) break;
+    u = new URL(loc, u).href;
+  }
+  return { coords: null, texto: texto && !/^https?:/i.test(texto) ? texto : null };
+}
+
+const PROVINCIAS: Record<string, string> = Object.fromEntries([
+  'Buenos Aires', 'Catamarca', 'Chaco', 'Chubut', 'Córdoba', 'Corrientes', 'Entre Ríos', 'Formosa', 'Jujuy', 'La Pampa', 'La Rioja',
+  'Mendoza', 'Misiones', 'Neuquén', 'Río Negro', 'Salta', 'San Juan', 'San Luis', 'Santa Cruz', 'Santa Fe', 'Santiago del Estero',
+  'Tierra del Fuego', 'Tucumán',
+].map(p => [norm(p), p]).concat([['caba', 'Ciudad Autónoma de Buenos Aires'], ['capital federal', 'Ciudad Autónoma de Buenos Aires'],
+  ['ciudad autonoma de buenos aires', 'Ciudad Autónoma de Buenos Aires'], ['ciudad de buenos aires', 'Ciudad Autónoma de Buenos Aires']]));
+
+const dist2 = (a: [number, number], b: [number, number]) => metros(a[1], a[0], b[1], b[0]);
+
+/** Direcciones exactas con Georef (calle + altura, o esquina). */
+async function georef(texto: string, foco: [number, number] | null): Promise<Lugar[]> {
+  const t = texto.replace(/\b[A-Z]\d{4}[A-Z]{0,3}\b/g, ' ').replace(/,?\s*argentina\s*$/i, '');   // saca códigos postales y "Argentina"
+  const partes = t.split(',').map(s => s.trim()).filter(Boolean);
+  if (!partes.length) return [];
+  const dir = sinTildes(partes[0]).replace(/\s*&\s*/g, ' y ').replace(/\s+esq(uina|\.)?\s+/i, ' y ').replace(/\bn[°º]\s*/i, '').trim();
+  if (!/\d/.test(dir) && !/\sy\s/i.test(dir)) return [];   // sin altura ni esquina: mejor el buscador general
+  const resto = partes.slice(1).map(p => p.replace(/^(provincia de|prov\.?|pcia\.?)\s+/i, '').trim()).filter(Boolean);
+  const provTxt = resto.find(p => PROVINCIAS[norm(p)]);
+  const otros = resto.filter(p => p !== provTxt);
+  const q = new URL('https://apis.datos.gob.ar/georef/api/direcciones');
+  q.searchParams.set('direccion', dir); q.searchParams.set('max', '10');
+  if (provTxt) q.searchParams.set('provincia', PROVINCIAS[norm(provTxt)]);
+  const ql = otros[0] ? new URL('https://apis.datos.gob.ar/georef/api/localidades') : null;
+  if (ql) { ql.searchParams.set('nombre', otros[0]); ql.searchParams.set('max', '1'); if (provTxt) ql.searchParams.set('provincia', PROVINCIAS[norm(provTxt)]); }
+  const pedir = (u: URL) => fetch(u, { signal: AbortSignal.timeout(7000) }).then(r => r.ok ? r.json() : null).catch(() => null);
+  const [rd, rl] = await Promise.all([pedir(q), ql ? pedir(ql) : Promise.resolve(null)]);
+  // deno-lint-ignore no-explicit-any
+  const ds: any[] = rd?.direcciones || [];
+  const cl = rl?.localidades?.[0]?.centroide;
+  const ref: [number, number] | null = cl && cl.lat != null ? [cl.lat, cl.lon] : foco;
+  const out = ds.filter(d => d.ubicacion && d.ubicacion.lat != null).map(d => {
+    const nom = String(d.nomenclatura || '');
+    const coincide = otros.filter(o => norm(nom).includes(norm(o))).length;
+    const lugar: Lugar = { lat: d.ubicacion.lat, lon: d.ubicacion.lon, fuente: 'georef',
+      label: titulo(nom.split(',')[0]) + nom.slice(nom.indexOf(',') >= 0 ? nom.indexOf(',') : nom.length),
+      name: titulo(nom.split(',')[0]), housenumber: d.altura?.valor != null ? String(d.altura.valor) : undefined };
+    return { lugar, orden: -coincide * 1e9 + (ref ? dist2(ref, [lugar.lat, lugar.lon]) : 0) };
+  });
+  out.sort((a, b) => a.orden - b.orden);
+  return out.slice(0, 5).map(x => x.lugar);
+}
+
+/** Buscador general (Pelias de HeiGIT). */
+// deno-lint-ignore no-explicit-any
+async function pelias(texto: string, params: Record<string, unknown> | undefined): Promise<any[]> {
+  const u = new URL(BASE + PATHS.search);
+  for (const k of PARAMS) { const v = params?.[k]; if (v != null && v !== '' && k !== 'text') u.searchParams.set(k, String(v).slice(0, 200)); }
+  u.searchParams.set('text', texto.slice(0, 200));
+  u.searchParams.set('api_key', KEY);
+  const r = await fetch(u, { headers: { Accept: 'application/json', Authorization: KEY }, signal: AbortSignal.timeout(10000) });
+  if (r.status === 401 || r.status === 403) throw new Error('clave');
+  if (!r.ok) return [];
+  return (await r.json()).features || [];
+}
+/** Nombre de la dirección en unas coordenadas (para mostrar algo legible). */
+async function nombreEn(la: number, lo: number): Promise<string | null> {
+  try {
+    const u = new URL(BASE + PATHS.reverse);
+    u.searchParams.set('point.lat', String(la)); u.searchParams.set('point.lon', String(lo)); u.searchParams.set('size', '1'); u.searchParams.set('api_key', KEY);
+    const r = await fetch(u, { headers: { Accept: 'application/json', Authorization: KEY }, signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return null;
+    const l = (await r.json()).features?.[0]?.properties?.label;
+    return l ? String(l).replace(/, Argentina$/, '') : null;
+  } catch { return null; }
+}
+
+async function buscar(params: Record<string, unknown> | undefined) {
+  const texto = String(params?.text ?? '').slice(0, 1000).trim();
+  const fla = Number(params?.['focus.point.lat']), flo = Number(params?.['focus.point.lon']);
+  const foco: [number, number] | null = Number.isFinite(fla) && Number.isFinite(flo) ? [fla, flo] : null;
+  const primeros: Lugar[] = [];
+  let busca = texto, delLink = false;
+  const link = texto.match(/https?:\/\/[^\s<>"]+/i)?.[0];
+  if (link) {
+    delLink = true;
+    try {
+      const r = await abrirLink(link);
+      if (r.coords) {
+        const [la, lo] = r.coords;
+        const n = await nombreEn(la, lo);
+        primeros.push({ lat: la, lon: lo, fuente: 'link', name: 'Ubicación del link de Google Maps', label: 'Ubicación exacta del link' + (n ? ` (cerca de ${n})` : '') });
+      }
+      busca = r.texto || texto.replace(link, '').trim();
+    } catch { busca = texto.replace(link, '').trim(); }
+  }
+  if (!primeros.length) {
+    const c = coordsDe(busca);
+    if (c) {
+      const n = await nombreEn(c[0], c[1]);
+      primeros.push({ lat: c[0], lon: c[1], fuente: 'coordenadas', name: `${c[0].toFixed(5)}, ${c[1].toFixed(5)}`,
+        label: `Coordenadas ${c[0].toFixed(5)}, ${c[1].toFixed(5)}` + (n ? ` (cerca de ${n})` : '') });
+    }
+  }
+  let resto: unknown[] = [];
+  if (!primeros.length && busca.length >= 3) {
+    const [g, p] = await Promise.all([georef(busca, foco).catch(() => [] as Lugar[]), pelias(busca, params)]);
+    if (delLink) g.forEach(x => { x.label += ' (del link)'; });
+    primeros.push(...g);
+    // deno-lint-ignore no-explicit-any
+    resto = p.filter((f: any) => {
+      const [lo, la] = f.geometry?.coordinates || [];
+      return !primeros.some(x => metros(x.lon, x.lat, lo, la) < 60);
+    });
+  }
+  return { type: 'FeatureCollection', features: [...primeros.map(feature), ...resto].slice(0, 10) };
+}
+
 const supabase = createClient(Deno.env.get('SUPABASE_URL')!, (Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY'))!, { auth: { persistSession: false } });
 
 Deno.serve(async req => {
@@ -287,6 +454,12 @@ Deno.serve(async req => {
           }
           return new Response(JSON.stringify(d), { status: 200, headers: { ...CORS, 'Content-Type': 'application/json' } });
         }
+      }
+    } else if (op === 'search') {
+      try { return json(await buscar(msg.params)); }
+      catch (e) {
+        if ((e as Error).message === 'clave') return json({ error: { code: 'clave', message: 'La clave de rutas del servidor no es válida. Avisale al dueño.' } }, 502);
+        return json({ error: { message: 'El buscador no respondió.' } }, 502);
       }
     } else {
       const u = new URL(BASE + PATHS[op]);

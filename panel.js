@@ -359,7 +359,7 @@
   function addrBox(campo) {
     const sel = $('f-viaje')[campo];
     const box = document.createElement('div'); box.className = 'wide where addr'; box.hidden = true;
-    box.innerHTML = `<label>${campo === 'destino_id' ? 'Dirección de destino' : 'Dirección de salida'}<span class="inline"><input type="text" data-q placeholder="Calle y número, ciudad — o coordenadas"><button type="button" class="btn ghost sm" data-buscar>Buscar</button></span></label>
+    box.innerHTML = `<label>${campo === 'destino_id' ? 'Dirección de destino' : 'Dirección de salida'}<span class="inline"><input type="text" data-q placeholder="Calle y número, esquina, link de Google Maps o coordenadas"><button type="button" class="btn ghost sm" data-buscar>Buscar</button></span></label>
       <span class="inline"><button type="button" class="btn ghost sm" data-mapa>Tocar en el mapa</button><span class="tip" data-elegido>Todavía no elegiste el punto.</span></span>
       <div class="list" data-resultados></div>
       <span class="inline"><label class="check"><input type="checkbox" data-guardar checked> Guardarlo en Lugares como</label><select data-tipo><option value="cliente">Cliente</option><option value="deposito">Depósito</option><option value="otro">Otro</option></select></span>`;
@@ -373,7 +373,8 @@
     };
     const buscar = async () => {
       const text = box.querySelector('[data-q]').value.trim();
-      const m = text.match(/(-?\d{1,2}\.\d{3,})\s*[, ]\s*(-?\d{1,3}\.\d{3,})/);
+      // Un link de Google Maps lo resuelve el servidor (el punto exacto, no el centro del mapa)
+      const m = !/https?:\/\//i.test(text) && text.match(/(-?\d{1,2}\.\d{3,})\s*[, ]\s*(-?\d{1,3}\.\d{3,})/);
       if (m) { setPunto(+m[1], +m[2], `Ubicación ${(+m[1]).toFixed(5)}, ${(+m[2]).toFixed(5)}`); return; }
       if (text.length < 3) { toast('Escribí la dirección para buscar.', true); return; }
       const res = box.querySelector('[data-resultados]'); res.innerHTML = '<p class="empty">Buscando…</p>';
@@ -578,7 +579,7 @@
   $('b-lugar-mapa').addEventListener('click', () => startPick((lat, lon) => setWhere(lat, lon, 'marcado en el mapa'), 'Tocá el mapa donde está el lugar (la entrada de camiones)'));
   $('b-lugar-buscar').addEventListener('click', async () => {
     const text = (fl.direccion.value || fl.nombre.value).trim();
-    const m = text.match(/(-?\d{1,2}\.\d{3,})\s*[, ]\s*(-?\d{1,3}\.\d{3,})/);
+    const m = !/https?:\/\//i.test(text) && text.match(/(-?\d{1,2}\.\d{3,})\s*[, ]\s*(-?\d{1,3}\.\d{3,})/);
     if (m) { setWhere(+m[1], +m[2], 'coordenadas pegadas'); return; }
     if (text.length < 3) { toast('Escribí la dirección (o el nombre) para buscar.', true); return; }
     const box = $('lugar-res'); box.innerHTML = '<p class="empty">Buscando…</p>';
@@ -587,7 +588,10 @@
     if (!r.ok || !r.data.features) { box.innerHTML = `<p class="empty">${esc(r.data.error?.message || 'El buscador no respondió.')} Podés tocar el mapa.</p>`; return; }
     if (!r.data.features.length) { box.innerHTML = '<p class="empty">No encontré esa dirección. Probá tocando el mapa.</p>'; return; }
     box.innerHTML = r.data.features.map((f, i) => `<button type="button" class="row" data-res="${i}" style="text-align:left;cursor:pointer"><span class="ico">📍</span><span class="t">${esc(f.properties.label.replace(/, Argentina$/, ''))}</span><span></span></button>`).join('');
-    box.onclick = e => { const b = e.target.closest('[data-res]'); if (!b) return; const f = r.data.features[+b.dataset.res]; setWhere(f.geometry.coordinates[1], f.geometry.coordinates[0], f.properties.label.replace(/, Argentina$/, '')); if (!fl.direccion.value) fl.direccion.value = f.properties.name || ''; box.innerHTML = ''; };
+    box.onclick = e => { const b = e.target.closest('[data-res]'); if (!b) return; const f = r.data.features[+b.dataset.res]; setWhere(f.geometry.coordinates[1], f.geometry.coordinates[0], f.properties.label.replace(/, Argentina$/, '')); const fu = f.properties.fuente;
+      // Si pegaron un link, en la dirección queda la dirección encontrada (no el link)
+      if (!fl.direccion.value || /https?:\/\//i.test(fl.direccion.value)) fl.direccion.value = fu === 'link' || fu === 'coordenadas' ? (f.properties.label.match(/cerca de (.+)\)$/)?.[1] || '') : (f.properties.name || '');
+      box.innerHTML = ''; };
   });
   $('b-lugar-cancel').addEventListener('click', resetLugar);
   fl.addEventListener('submit', async e => {
