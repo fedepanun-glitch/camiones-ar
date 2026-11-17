@@ -327,17 +327,26 @@
     const res = await ors('search', { params: { text, 'boundary.country': 'AR', size: 6, 'focus.point.lat': c.lat, 'focus.point.lon': c.lng } });
     if (!res.ok) throw new Error(res.data.error && res.data.error.code === 'clave' ? res.data.error.message : 'El buscador no respondió.');
     const d = res.data;
-    return d.features.map(f => ({ label: f.properties.label.replace(/, Argentina$/, ''), lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0], hn: !!f.properties.housenumber }));
+    // exacto = el servidor lo ubicó exacto: link de Google Maps, coordenadas o dirección oficial (Georef, con altura o esquina)
+    return d.features.map(f => ({ label: f.properties.label.replace(/, Argentina$/, ''), lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0],
+      hn: !!f.properties.housenumber || f.properties.fuente === 'georef', exacto: ['link', 'coordenadas', 'georef'].includes(f.properties.fuente) }));
   }
   async function geocode(text) {
-    if (/goo\.gl|maps\.app/i.test(text)) throw new Error('Ese link de Google Maps es corto y no trae la ubicación. En Google Maps dejá el dedo apretado sobre el lugar, copiá los números que aparecen arriba (por ejemplo -34.41, -58.59) y pegalos acá.');
+    const c = me ? { lat: me.lat, lng: me.lon } : map.getCenter();
+    // Links de Google Maps (también el mensaje de WhatsApp con el link): los abre el servidor y saca el punto exacto
+    if (/https?:\/\//i.test(text)) {
+      if (!NUBE) throw new Error('Para usar links de Google Maps hay que entrar con la cuenta de la empresa. Si no, en Google Maps dejá el dedo apretado sobre el lugar, copiá los números que aparecen arriba (por ejemplo -34.41, -58.59) y pegalos acá.');
+      const r = await orsSearch(text, c);
+      if (!r.length) throw new Error('No pude sacar la ubicación de ese link. Abrilo en Google Maps, dejá el dedo apretado sobre el lugar, copiá los números de arriba y pegalos acá.');
+      return r;
+    }
     const xy = parseCoords(text);
     if (xy) return [{ label: 'Ubicación pegada', ...xy }];
-    const c = me ? { lat: me.lat, lng: me.lon } : map.getCenter();
     const [a, b] = await Promise.allSettled([photon(text, c), orsSearch(text, c)]);
     if (a.status === 'rejected' && b.status === 'rejected' && !(NUBE && lugaresQueCoinciden(text).length)) throw b.reason;
+    const exactos = (b.value || []).filter(r => r.exacto), otros = (b.value || []).filter(r => !r.exacto);
     const out = [];
-    for (const r of [...(NUBE ? lugaresQueCoinciden(text) : []), ...(a.value || []), ...(b.value || [])]) {
+    for (const r of [...(NUBE ? lugaresQueCoinciden(text) : []), ...exactos, ...(a.value || []), ...otros]) {
       if (out.some(o => dist([o.lat, o.lon], [r.lat, r.lon]) < 60)) continue;
       out.push(r);
     }
@@ -1608,6 +1617,16 @@
   // ---------- Arranque ----------
   renderTruckChip(); setMode('home');
   if (NUBE) startCloud().catch(() => showLogin());
+  // Compartido desde WhatsApp o Google Maps (con la app instalada, aparece en "Compartir"): se busca ese lugar
+  const compartido = (() => { const p = new URLSearchParams(location.search); return [p.get('title'), p.get('text'), p.get('url')].filter(Boolean).join(' ').trim(); })();
+  if (compartido) {
+    history.replaceState(null, '', location.pathname);
+    $('q').value = compartido.slice(0, 1000);
+    (async () => {
+      if (NUBE) for (let i = 0; i < 40 && !session; i++) await new Promise(r => setTimeout(r, 250));   // espera la sesión
+      $('f-search').requestSubmit();
+    })();
+  }
   Promise.all([
     fetch('data/restricciones.json').then(r => r.json()),
     fetch('data/propias.json').then(r => r.json()).catch(() => []),
